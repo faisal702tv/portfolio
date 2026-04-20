@@ -1,0 +1,4 @@
+FROM caddy:2-alpine
+
+# Bake Caddy configuration into the image to avoid bind-mount path issues on managed deploy platforms.
+COPY Caddyfile /etc/caddy/Caddyfile

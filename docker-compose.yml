@@ -27,7 +27,10 @@ services:
 
   # Optional: Caddy reverse proxy with auto-HTTPS
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: portfolio-caddy:latest
     container_name: portfolio-caddy
     restart: unless-stopped
     init: true
@@ -38,7 +41,6 @@ services:
       DOMAIN: ${DOMAIN:-localhost}
       ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
