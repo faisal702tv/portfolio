@@ -24,7 +24,7 @@ const MAX_NOTIFICATIONS = 100;
 
 // ─── In-memory store with external sync ─────────────────────
 let notifications: NotificationItem[] = [];
-let listeners: Set<() => void> = new Set();
+const listeners: Set<() => void> = new Set();
 
 function emitChange() {
   listeners.forEach((fn) => fn());

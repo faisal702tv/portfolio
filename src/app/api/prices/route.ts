@@ -443,7 +443,7 @@ async function fetchCrypto(): Promise<Record<string, LivePrice>> {
       const mappedSymbol = CRYPTO_SYMBOL_MAP[rawSymbol] || rawSymbol;
 
       let high52w: number | null = null;
-      let low52w: number | null = null;
+      const low52w: number | null = null;
 
       if (coin.ath && coin.ath_date) {
         const athDate = new Date(coin.ath_date);
