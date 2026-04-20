@@ -1,0 +1,873 @@
+// Portfolio Manager - Professional Investment Platform
+// Prisma Schema v6.0 - Multi-Market Edition
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Markets & Exchanges
+// ═══════════════════════════════════════════════════════════════
+
+model Market {
+  id              String   @id @default(cuid())
+  code            String   @unique   // TADAWUL, ADX, DFM, etc.
+  name            String            // سوق أبوظبي للأوراق المالية
+  nameEn          String            // Abu Dhabi Securities Exchange
+  country         String             // UAE, SA, EG, etc.
+  currency        String             // AED, SAR, EGP, etc.
+  currencySymbol  String             // د.إ, ر.س, ج.م, etc.
+  currencyName    String             // درهم إماراتي, ريال سعودي, etc.
+  timezone        String             // Asia/Riyadh, Africa/Cairo, etc.
+  
+  // Trading Hours
+  openTime        String?            // 10:00
+  closeTime       String?            // 14:00
+  tradingDays     String?            // Sunday-Thursday
+  
+  // Status
+  isActive        Boolean  @default(true)
+  isRealTime      Boolean  @default(false)
+  
+  // Market Index
+  mainIndex       String?            // TASI, ADX, DFMGI
+  mainIndexName   String?           // مؤشر تداول جميع الأسهم
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  exchanges       Exchange[]
+  marketData      MarketData[]
+  
+  @@map("markets")
+}
+
+model Exchange {
+  id              String   @id @default(cuid())
+  marketId        String
+  code            String   @unique   // ADX, DFM, KSE, etc.
+  name            String   
+  nameEn          String   
+  type            String             // main, derivatives, commodities
+  
+  isActive        Boolean  @default(true)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  market          Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  stocks          Stock[]
+  
+  @@index([marketId])
+  @@map("exchanges")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Users & Authentication
+// ═══════════════════════════════════════════════════════════════
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  username      String    @unique
+  password      String
+  name          String?   
+  role          String    @default("user") // admin, user
+  avatar        String?   
+  preferences   Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  portfolios    Portfolio[]
+  alerts        Alert[]
+  watchlists    Watchlist[]
+  notifications Notification[]
+  journal       Journal[]
+  earningsRecords UserEarningsRecord[]
+  corporateActionRecords UserCorporateActionRecord[]
+  
+  @@index([email])
+  @@index([username])
+  @@map("users")
+}
+
+model UserEarningsRecord {
+  id               String   @id @default(cuid())
+  userId           String
+  clientId         String
+  symbol           String
+  name             String
+  quarter          String
+  year             Int
+  announcementDate DateTime?
+  expectedEPS      Float?
+  actualEPS        Float?
+  surprise         Float?
+  surprisePct      Float?
+  result           String?
+  currency         String   @default("USD")
+  source           String   @default("auto")
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user             User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([symbol])
+  @@index([announcementDate])
+  @@map("user_earnings_records")
+}
+
+model UserCorporateActionRecord {
+  id             String   @id @default(cuid())
+  userId         String
+  clientId       String
+  symbol         String
+  name           String
+  type           String
+  ratio          String?
+  ratioFrom      Float?
+  ratioTo        Float?
+  dividendAmount Float?
+  effectiveDate  DateTime?
+  currency       String   @default("USD")
+  applied        Boolean  @default(false)
+  source         String   @default("auto")
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([symbol])
+  @@index([effectiveDate])
+  @@map("user_corporate_action_records")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Portfolios
+// ═══════════════════════════════════════════════════════════════
+
+model Portfolio {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String   
+  description String?  
+  type        String   @default("mixed") // stocks, bonds, funds, mixed
+  currency    String   @default("SAR") 
+  isActive    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stocks      Stock[]
+  bonds       Bond[]
+  funds       Fund[]
+  transactions Transaction[]
+  
+  @@index([userId])
+  @@map("portfolios")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stocks
+// ═══════════════════════════════════════════════════════════════
+
+model Stock {
+  id            String   @id @default(cuid())
+  portfolioId   String
+  symbol        String   
+  name          String   
+  exchangeId    String?  
+  sector        String?  
+  industry      String?  
+  
+  // Purchase Info
+  qty           Float
+  buyPrice      Float
+  buyDate       DateTime?
+  buyCurrency   String   @default("SAR") 
+  
+  // Current Info
+  currentPrice  Float?
+  change        Float?
+  changePct     Float?
+  open          Float?
+  high          Float?
+  low           Float?
+  volume        Float?
+  week52High    Float?
+  week52Low     Float?
+  
+  // Calculated
+  totalCost     Float?
+  currentValue  Float?
+  profitLoss    Float?
+  profitLossPct Float?
+  
+  // Sharia
+  isShariaCompliant Boolean?
+  shariaStatus      String? 
+  
+  // Notes
+  notes         String?   
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  portfolio     Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  exchange      Exchange? @relation(fields: [exchangeId], references: [id])
+  
+  @@index([symbol])
+  @@index([portfolioId])
+  @@index([exchangeId])
+  @@map("stocks")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Bonds & Sukuk
+// ═══════════════════════════════════════════════════════════════
+
+model Bond {
+  id              String   @id @default(cuid())
+  portfolioId     String
+  symbol          String   
+  name            String   
+  issuer          String?  
+  
+  // Bond Details
+  type            String   @default("bond")  // bond, sukuk
+  faceValue       Float
+  couponRate      Float?
+  maturityDate    DateTime?
+  issueDate       DateTime?
+  
+  // Purchase
+  qty             Float
+  buyPrice        Float    // Price as percentage of face value
+  buyYield        Float?
+  buyDate         DateTime?
+  
+  // Current
+  currentPrice    Float?
+  currentYield    Float?
+  
+  // Sharia
+  isShariaCompliant Boolean?
+  
+  notes           String?   
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  portfolio       Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  
+  @@index([symbol])
+  @@index([type])
+  @@map("bonds")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Investment Funds
+// ═══════════════════════════════════════════════════════════════
+
+model Fund {
+  id              String   @id @default(cuid())
+  portfolioId     String
+  symbol          String?  
+  name            String   
+  fundType        String?    // equity, bond, mixed, money_market, real_estate
+  
+  // Purchase
+  units           Float
+  buyPrice        Float    // Unit price at purchase
+  buyDate         DateTime?
+  
+  // Current
+  currentPrice    Float?
+  nav             Float?
+  
+  // Performance
+  ytdReturn       Float?
+  oneYearReturn   Float?
+  
+  // Sharia
+  isShariaCompliant Boolean?
+  
+  notes           String?   
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  portfolio       Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  
+  @@index([fundType])
+  @@map("funds")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Transactions History
+// ═══════════════════════════════════════════════════════════════
+
+model Transaction {
+  id            String   @id @default(cuid())
+  portfolioId   String
+  type          String    // buy, sell, dividend, split
+  assetType     String    // stock, bond, fund
+  assetSymbol   String   
+  assetName     String   
+  
+  qty           Float
+  price         Float
+  total         Float
+  fees          Float?
+  
+  profitLoss    Float?
+  profitLossPct Float?
+  
+  date          DateTime
+  notes         String?   
+  
+  createdAt     DateTime  @default(now())
+  
+  portfolio     Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  
+  @@index([assetSymbol])
+  @@index([type])
+  @@index([date])
+  @@map("transactions")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Alerts
+// ═══════════════════════════════════════════════════════════════
+
+model Alert {
+  id          String   @id @default(cuid())
+  userId      String
+  symbol      String   
+  name        String?  
+  
+  type        String    // price_up, price_down, pct_up, pct_down
+  targetValue Float
+  currentValue Float?
+  
+  isActive    Boolean  @default(true)
+  isTriggered Boolean  @default(false)
+  triggeredAt DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([symbol])
+  @@index([userId])
+  @@index([isActive])
+  @@map("alerts")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Watchlist - قوائم المتابعة المتعددة
+// ═══════════════════════════════════════════════════════════════
+
+model Watchlist {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String   
+  description String?
+  color       String?   // لون القائمة
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items       WatchlistItem[]
+  
+  @@index([userId])
+  @@map("watchlists")
+}
+
+model WatchlistItem {
+  id          String   @id @default(cuid())
+  watchlistId String
+  symbol      String   
+  name        String?  
+  market      String?  
+  marketFlag  String?  
+  
+  // السعر والتغيير
+  price       Float?
+  change      Float?
+  changePct   Float?
+  
+  // تنبيهات
+  targetPrice Float?
+  alertAbove  Float?
+  alertBelow  Float?
+  
+  // معلومات إضافية
+  notes       String?
+  order       Int      @default(0)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  
+  @@index([watchlistId])
+  @@index([symbol])
+  @@map("watchlist_items")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Notifications
+// ═══════════════════════════════════════════════════════════════
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String    // alert, system, news
+  title       String   
+  message     String   
+  data        Json?
+  
+  isRead      Boolean  @default(false)
+  readAt      DateTime?
+  
+  createdAt   DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Market Data Cache
+// ═══════════════════════════════════════════════════════════════
+
+model MarketData {
+  id          String   @id @default(cuid())
+  symbol      String   @unique 
+  name        String?  
+  marketId    String?
+  
+  price       Float?
+  change      Float?
+  changePct   Float?
+  open        Float?
+  high        Float?
+  low         Float?
+  volume      Float?
+  week52High  Float?
+  week52Low   Float?
+  
+  marketCap   Float?
+  peRatio     Float?
+  
+  lastUpdated DateTime?
+  
+  market      Market?  @relation(fields: [marketId], references: [id])
+  
+  @@index([symbol])
+  @@index([marketId])
+  @@map("market_data")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Settings & Configuration
+// ═══════════════════════════════════════════════════════════════
+
+model Setting {
+  id          String   @id @default(cuid())
+  key         String   @unique 
+  value       Json
+  description String?  
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("settings")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Dividends
+// ═══════════════════════════════════════════════════════════════
+
+model Dividend {
+  id            String   @id @default(cuid())
+  symbol        String   
+  name          String   
+  amount        Float
+  currency      String   @default("SAR") 
+  exDividendDate DateTime
+  paymentDate   DateTime?
+  status        String   @default("pending")  // pending, paid, cancelled
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([symbol])
+  @@index([exDividendDate])
+  @@map("dividends")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Corporate Actions
+// ═══════════════════════════════════════════════════════════════
+
+model CorporateAction {
+  id            String   @id @default(cuid())
+  symbol        String   
+  name          String   
+  type          String    // split, dividend, rights_issue, bonus
+  description   String?  
+  exDate        DateTime
+  recordDate    DateTime?
+  ratio         String?   // e.g., "1:5" for bonus
+  
+  applied       Boolean  @default(false)
+  appliedAt     DateTime?
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([symbol])
+  @@index([exDate])
+  @@map("corporate_actions")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stock Information with Sharia Compliance
+// معلومات الأسهم مع معايير الشريعة الإسلامية
+// ═══════════════════════════════════════════════════════════════
+
+model StockInfo {
+  id              String   @id @default(cuid())
+  symbol          String   @unique 
+  name            String   
+  nameEn          String?  
+  marketCode      String     // TADAWUL, ADX, DFM, etc.
+  
+  // Company Info
+  sector          String?  
+  industry        String?  
+  isin            String?  
+  
+  // Financial Metrics
+  marketCap       Float?
+  peRatio         Float?
+  pbRatio         Float?
+  dividendYield   Float?
+  eps             Float?
+  roe             Float?
+  debtToEquity    Float?
+  
+  // Current Price Data
+  currentPrice    Float?
+  change          Float?
+  changePct       Float?
+  open            Float?
+  high            Float?
+  low             Float?
+  volume          Float?
+  week52High      Float?
+  week52Low       Float?
+  
+  // Overall Sharia Status
+  isShariaCompliant Boolean @default(false)
+  shariaStatus      String  @default("pending")  // compliant, non_compliant, pending, under_review
+  lastShariaReview  DateTime?
+  nextReviewDate    DateTime?
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  shariaCompliance ShariaCompliance?
+  financialRatios  StockFinancialRatios?
+  
+  @@index([symbol])
+  @@index([marketCode])
+  @@index([sector])
+  @@index([isShariaCompliant])
+  @@map("stock_info")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sharia Compliance Details
+// تفاصيل المعايير الشرعية
+// ═══════════════════════════════════════════════════════════════
+
+model ShariaCompliance {
+  id                String   @id @default(cuid())
+  stockInfoId       String   @unique
+  
+  // ═══════════════════════════════════════════════════════════════
+  // المعايير الإسلامية العالمية
+  // ═══════════════════════════════════════════════════════════════
+  
+  // معايير هيئة المحاسبة والمراجعة للمؤسسات المالية الإسلامية (AAOIFI)
+  aaoifiStatus      String   @default("pending")  // compliant, non_compliant, pending
+  aaoifiScore       Float?   // درجة الامتثال (0-100)
+  aaoifiNotes       String?  
+  
+  // ═══════════════════════════════════════════════════════════════
+  // المعايير السعودية
+  // ═══════════════════════════════════════════════════════════════
+  
+  // معايير الراجحي
+  alRajhiStatus     String   @default("pending") 
+  alRajhiScore      Float?
+  alRajhiNotes      String?  
+  
+  // معايير البلاد
+  alBiladStatus     String   @default("pending") 
+  alBiladScore      Float?
+  alBiladNotes      String?  
+  
+  // معايير الإنماء
+  alInmaStatus      String   @default("pending") 
+  alInmaScore       Float?
+  alInmaNotes       String?  
+  
+  // معايير السعودي الفرنسي
+  saudiFrenchStatus String   @default("pending") 
+  saudiFrenchScore  Float?
+  saudiFrenchNotes  String?  
+  
+  // معايير الجزيرة
+  alJaziraStatus    String   @default("pending") 
+  alJaziraScore     Float?
+  alJaziraNotes     String?  
+  
+  // ═══════════════════════════════════════════════════════════════
+  // معايير مكتب المقاصد للاستشارات الاستثمارية - د. محمد العصيمي
+  // almaqased.net
+  // ═══════════════════════════════════════════════════════════════
+  maqasedStatus     String   @default("pending") 
+  maqasedScore      Float?
+  maqasedNotes      String?  
+  maqasedDebtRatio  Float?   // نسبة القروض الربوية
+  maqasedCashRatio  Float?   // نسبة النقد والاستثمارات المحرمة
+  maqasedIncomeRatio Float?  // نسبة الإيرادات المحرمة
+  maqasedLastUpdate DateTime?
+  
+  // ═══════════════════════════════════════════════════════════════
+  // معايير صفر قروض وصفر ديون (الأكثر صرامة)
+  // Zero Loans Zero Debt Standard
+  // ═══════════════════════════════════════════════════════════════
+  zeroDebtStatus    String   @default("pending") 
+  zeroDebtScore     Float?
+  zeroDebtNotes     String?  
+  hasDebt           Boolean  @default(false)     // هل يوجد ديون؟
+  debtAmount        Float?                        // مبلغ الديون
+  totalDebtRatio    Float?                        // نسبة إجمالي الديون
+  hasInterestBearingDebt Boolean @default(false) // هل يوجد ديون ربوية؟
+  
+  // ═══════════════════════════════════════════════════════════════
+  // المعايير العالمية (International Standards)
+  // ═══════════════════════════════════════════════════════════════
+  
+  // Dow Jones Islamic Market Index
+  dowJonesStatus    String   @default("pending") 
+  dowJonesScore     Float?
+  dowJonesNotes     String?  
+  
+  // FTSE Sharia
+  ftseStatus        String   @default("pending") 
+  ftseScore         Float?
+  ftseNotes         String?  
+  
+  // S&P Sharia
+  spShariaStatus    String   @default("pending") 
+  spShariaScore     Float?
+  spShariaNotes     String?  
+  
+  // MSCI Islamic
+  msciStatus        String   @default("pending") 
+  msciScore         Float?
+  msciNotes         String?  
+  
+  // ═══════════════════════════════════════════════════════════════
+  // معايير الفحص التفصيلية
+  // ═══════════════════════════════════════════════════════════════
+  
+  // Business Activities (نشاط الشركة)
+  businessActivityCompliant Boolean @default(false)
+  businessActivityNotes     String? 
+  
+  // Interest-bearing Debt (الدين الربوي)
+  debtRatio              Float?  // نسبة الدين الربوي
+  debtCompliant          Boolean @default(false)
+  debtThreshold          Float?  @default(0.33) // الحد الأقصى 33%
+  debtNotes              String? 
+  
+  // Impermissible Income (الدخل غير المباح)
+  impermissibleIncomeRatio Float?  // نسبة الدخل غير المباح
+  impermissibleIncomeCompliant Boolean @default(false)
+  impermissibleIncomeThreshold Float? @default(0.05) // الحد الأقصى 5%
+  impermissibleIncomeNotes String? 
+  
+  // Cash and Interest-bearing Assets (النقد والأصول الربوية)
+  cashRatio              Float?
+  cashCompliant          Boolean @default(false)
+  cashThreshold          Float? @default(0.33) // الحد الأقصى 33%
+  cashNotes              String? 
+  
+  // Accounts Receivable (ذمم مدينة)
+  accountsReceivableRatio Float?
+  accountsReceivableCompliant Boolean @default(false)
+  accountsReceivableThreshold Float? @default(0.49) // الحد الأقصى 49%
+  accountsReceivableNotes String? 
+  
+  // ═══════════════════════════════════════════════════════════════
+  // معلومات المراجعة
+  // ═══════════════════════════════════════════════════════════════
+  
+  reviewedBy        String?  
+  reviewDate        DateTime?
+  reviewSource      String?    // مصدر المراجعة
+  certificationBody String?    // جهة التصديق
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  stockInfo         StockInfo @relation(fields: [stockInfoId], references: [id], onDelete: Cascade)
+  
+  @@index([aaoifiStatus])
+  @@index([alRajhiStatus])
+  @@index([maqasedStatus])
+  @@index([zeroDebtStatus])
+  @@map("sharia_compliance")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stock Financial Ratios
+// النسب المالية للأسهم
+// ═══════════════════════════════════════════════════════════════
+
+model StockFinancialRatios {
+  id                String   @id @default(cuid())
+  stockInfoId       String   @unique
+  
+  // Profitability Ratios (نسب الربحية)
+  grossMargin       Float?   // هامش الربح الإجمالي
+  operatingMargin   Float?   // هامش الربح التشغيلي
+  netMargin         Float?   // هامش صافي الربح
+  roe               Float?   // العائد على حقوق المساهمين
+  roa               Float?   // العائد على الأصول
+  roi               Float?   // العائد على الاستثمار
+  
+  // Liquidity Ratios (نسب السيولة)
+  currentRatio      Float?   // نسبة التداول
+  quickRatio        Float?   // نسبة السيولة السريعة
+  cashRatio         Float?   // نسبة النقدية
+  
+  // Leverage Ratios (نسب الرافعة المالية)
+  debtToEquity      Float?   // نسبة الدين إلى حقوق المساهمين
+  debtToAssets      Float?   // نسبة الدين إلى الأصول
+  interestCoverage  Float?   // تغطية الفوائد
+  
+  // Valuation Ratios (نسب التقييم)
+  peRatio           Float?   // مضاعف السعر إلى الربحية
+  pbRatio           Float?   // مضاعف السعر إلى القيمة الدفترية
+  psRatio           Float?   // مضاعف السعر إلى المبيعات
+  pegRatio          Float?   // نسبة النمو إلى مضاعف الربحية
+  evEbitda          Float?   // قيمة المؤسسة إلى الأرباح قبل الفوائد
+  
+  // Per Share Data (البيانات لكل سهم)
+  eps               Float?   // ربحية السهم
+  bookValuePerShare Float?   // القيمة الدفترية للسهم
+  salesPerShare     Float?   // المبيعات لكل سهم
+  cashPerShare      Float?   // النقدية لكل سهم
+  dividendPerShare  Float?   // التوزيعات لكل سهم
+  
+  // Growth Metrics (مقاييس النمو)
+  revenueGrowth     Float?   // نمو الإيرادات
+  earningsGrowth    Float?   // نمو الأرباح
+  dividendGrowth    Float?   // نمو التوزيعات
+  
+  // Data Source
+  dataSource        String?  
+  reportDate        DateTime?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  stockInfo         StockInfo @relation(fields: [stockInfoId], references: [id], onDelete: Cascade)
+  
+  @@map("stock_financial_ratios")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Forex Pairs
+// أزواج العملات
+// ═══════════════════════════════════════════════════════════════
+
+model ForexPair {
+  id              String   @id @default(cuid())
+  symbol          String   @unique   // EURUSD, GBPUSD
+  name            String   
+  nameEn          String?  
+  baseCurrency    String   
+  quoteCurrency   String   
+  category        String     // major, minor, emerging, arab
+  
+  // Price Data
+  price           Float?
+  change          Float?
+  changePct       Float?
+  bid             Float?
+  ask             Float?
+  spread          Float?
+  high            Float?
+  low             Float?
+  open            Float?
+  
+  // Trading Info
+  pipValue        Float?   // قيمة النقطة
+  pipDecimals     Int      @default(4)
+  lotSize         Float?   @default(100000)
+  
+  // Timestamps
+  lastUpdated     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([symbol])
+  @@index([category])
+  @@map("forex_pairs")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Investment Journal
+// سجل الملاحظات الاستثمارية
+// ═══════════════════════════════════════════════════════════════
+
+model Journal {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   @default("note") // note, decision, lesson
+  content   String
+  tags      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@map("journal")
+}

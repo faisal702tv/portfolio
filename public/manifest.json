@@ -1,0 +1,39 @@
+{
+  "name": "Portfolio Manager Pro",
+  "short_name": "Portfolio",
+  "description": "منصة احترافية لإدارة المحافظ الاستثمارية",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
+  "orientation": "any",
+  "dir": "rtl",
+  "lang": "ar",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "business"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "لوحة التحكم",
+      "url": "/",
+      "description": "الذهاب للوحة التحكم الرئيسية"
+    },
+    {
+      "name": "المحافظ",
+      "url": "/portfolios",
+      "description": "عرض المحافظ الاستثمارية"
+    },
+    {
+      "name": "الأسواق",
+      "url": "/markets",
+      "description": "تتبع الأسواق المباشرة"
+    }
+  ]
+}

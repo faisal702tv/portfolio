@@ -1,0 +1,15 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Production domain (auto HTTPS from Let's Encrypt)
+{$DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy portfolio:3333
+}
+
+# Fallback for direct-IP / local testing (HTTP)
+:80 {
+	encode zstd gzip
+	reverse_proxy portfolio:3333
+}

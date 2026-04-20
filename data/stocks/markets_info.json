@@ -1,0 +1,82 @@
+{
+  "american": {
+    "total": 6000,
+    "bilad_count": 1932,
+    "rajhi_count": 1688,
+    "maqasid_count": 2146,
+    "fiqh_count": 340,
+    "all_stocks_count": 6000
+  },
+  "saudi": {
+    "total": 391,
+    "bilad_count": 219,
+    "rajhi_count": 201,
+    "maqasid_count": 231,
+    "fiqh_count": 99,
+    "all_stocks_count": 391
+  },
+  "uae": {
+    "total": 152,
+    "bilad_count": 61,
+    "rajhi_count": 57,
+    "maqasid_count": 63,
+    "fiqh_count": 14,
+    "all_stocks_count": 152
+  },
+  "egypt": {
+    "total": 254,
+    "bilad_count": 151,
+    "rajhi_count": 150,
+    "maqasid_count": 156,
+    "fiqh_count": 97,
+    "all_stocks_count": 254
+  },
+  "oman": {
+    "total": 62,
+    "bilad_count": 41,
+    "rajhi_count": 39,
+    "maqasid_count": 42,
+    "fiqh_count": 0,
+    "all_stocks_count": 62
+  },
+  "qatar": {
+    "total": 55,
+    "bilad_count": 19,
+    "rajhi_count": 15,
+    "maqasid_count": 20,
+    "fiqh_count": 2,
+    "all_stocks_count": 55
+  },
+  "jordan": {
+    "total": 49,
+    "bilad_count": 25,
+    "rajhi_count": 24,
+    "maqasid_count": 25,
+    "fiqh_count": 0,
+    "all_stocks_count": 49
+  },
+  "bahrain": {
+    "total": 20,
+    "bilad_count": 5,
+    "rajhi_count": 5,
+    "maqasid_count": 5,
+    "fiqh_count": 2,
+    "all_stocks_count": 20
+  },
+  "american_etf": {
+    "total": 1349,
+    "bilad_count": 1170,
+    "rajhi_count": 1170,
+    "maqasid_count": 1170,
+    "fiqh_count": 0,
+    "all_stocks_count": 1349
+  },
+  "kuwait": {
+    "total": 136,
+    "bilad_count": 50,
+    "rajhi_count": 47,
+    "maqasid_count": 52,
+    "fiqh_count": 10,
+    "all_stocks_count": 136
+  }
+}
