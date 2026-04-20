@@ -1,7 +1,6 @@
 services:
   portfolio:
     build: .
-    container_name: portfolio
     user: "0:0"
     restart: unless-stopped
     init: true
@@ -25,44 +24,5 @@ services:
       retries: 10
       start_period: 45s
 
-  # Optional: Caddy reverse proxy with auto-HTTPS
-  caddy:
-    image: caddy:2-alpine
-    container_name: portfolio-caddy
-    restart: unless-stopped
-    init: true
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      DOMAIN: ${DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
-    command:
-      - /bin/sh
-      - -c
-      - |
-        cat >/etc/caddy/Caddyfile <<EOF
-        {
-          email $$ACME_EMAIL
-        }
-        $$DOMAIN {
-          encode zstd gzip
-          reverse_proxy portfolio:3333
-        }
-        :80 {
-          encode zstd gzip
-          reverse_proxy portfolio:3333
-        }
-        EOF
-        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
-    volumes:
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      portfolio:
-        condition: service_healthy
-
 volumes:
   portfolio-data:
-  caddy-data:
-  caddy-config:
