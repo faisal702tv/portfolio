@@ -2,6 +2,7 @@ services:
   portfolio:
     build: .
     container_name: portfolio
+    user: "0:0"
     restart: unless-stopped
     init: true
     ports:
@@ -14,11 +15,15 @@ services:
     volumes:
       - portfolio-data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3333/"]
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const http=require('http');const req=http.get('http://127.0.0.1:3333/api',res=>process.exit(res.statusCode>=200&&res.statusCode<400?0:1));req.on('error',()=>process.exit(1));req.setTimeout(5000,()=>{req.destroy();process.exit(1);});\"",
+        ]
       interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
 
   # Optional: Caddy reverse proxy with auto-HTTPS
   caddy:
