@@ -6,6 +6,21 @@ services:
     init: true
     ports:
       - "3333:3333"
+    networks:
+      - default
+      - coolify
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.services.portfolio.loadbalancer.server.port=3333"
+      - "traefik.http.routers.portfolio-http.rule=Host(`isthmar.cloud`) || Host(`www.isthmar.cloud`)"
+      - "traefik.http.routers.portfolio-http.entrypoints=http"
+      - "traefik.http.routers.portfolio-http.middlewares=portfolio-https-redirect"
+      - "traefik.http.middlewares.portfolio-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.routers.portfolio-https.rule=Host(`isthmar.cloud`) || Host(`www.isthmar.cloud`)"
+      - "traefik.http.routers.portfolio-https.entrypoints=https"
+      - "traefik.http.routers.portfolio-https.tls=true"
+      - "traefik.http.routers.portfolio-https.tls.certresolver=letsencrypt"
     environment:
       NODE_ENV: production
       DATABASE_URL: ${DOCKER_DATABASE_URL:-file:/app/data/portfolio.db}
@@ -26,3 +41,7 @@ services:
 
 volumes:
   portfolio-data:
+
+networks:
+  coolify:
+    external: true
