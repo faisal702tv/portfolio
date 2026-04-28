@@ -77,6 +77,22 @@ interface EventsHubResponse {
 type DividendViewEvent = UnifiedEvent & {
   dividendAmount: number | null;
   upcoming: boolean;
+  currentPrice: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  pricePositionPct: number | null;
+  volume: number | null;
+  avgVolume: number | null;
+  marketCap: number | null;
+  dividendFrequency: string | null;
+  dividendFrequencyAr: string | null;
+  dividendAnnual: number | null;
+  dividendLast12m: number | null;
+  dividendAverage: number | null;
+  dividendYieldPct: number | null;
+  payoutRatioPct: number | null;
+  nextExDate: string | null;
+  nextPaymentDate: string | null;
 };
 
 const LOCAL_WATCHLIST_KEY = 'watchlist_data';
@@ -313,6 +329,74 @@ function parseNumber(value: unknown): number | null {
   return null;
 }
 
+function formatMoney(value: number | null, currency: string, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })} ${currency}`;
+}
+
+function formatCompactNumber(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
+  return value.toLocaleString('en-US');
+}
+
+function formatPercent(value: number | null, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}%`;
+}
+
+function toValidPercent(value: unknown): number | null {
+  const parsed = parseNumber(value);
+  if (parsed == null) return null;
+  if (Math.abs(parsed) <= 2) return parsed * 100;
+  return parsed;
+}
+
+function toIsoDateLike(value: unknown): string | null {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return value.trim();
+  }
+  const numeric = parseNumber(value);
+  if (numeric != null) {
+    const d = new Date(numeric * 1000);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function extractDividendMetrics(event: UnifiedEvent) {
+  const details = event.details || {};
+  const frequencyRaw = String(details.dividendFrequency || '').trim();
+  const frequencyArRaw = String(details.dividendFrequencyAr || '').trim();
+  return {
+    currentPrice: parseNumber(details.currentPrice),
+    week52High: parseNumber(details.week52High),
+    week52Low: parseNumber(details.week52Low),
+    pricePositionPct: parseNumber(details.pricePositionPct),
+    volume: parseNumber(details.volume),
+    avgVolume: parseNumber(details.avgVolume),
+    marketCap: parseNumber(details.marketCap),
+    dividendFrequency: frequencyRaw || null,
+    dividendFrequencyAr: frequencyArRaw || null,
+    dividendAnnual: parseNumber(details.dividendAnnual),
+    dividendLast12m: parseNumber(details.dividendLast12m),
+    dividendAverage: parseNumber(details.dividendAverage),
+    dividendYieldPct: toValidPercent(details.dividendYieldPct),
+    payoutRatioPct: toValidPercent(details.payoutRatioPct),
+    nextExDate: toIsoDateLike(details.nextExDate),
+    nextPaymentDate: toIsoDateLike(details.nextPaymentDate),
+  };
+}
+
 function extractDividendAmount(event: UnifiedEvent): number | null {
   const details = event.details || {};
   const fromDetails = parseNumber(details.amount) ?? parseNumber(details.dividendAmount);
@@ -511,11 +595,15 @@ export default function DividendCalendarPage() {
 
   const dividendEvents = useMemo(() => {
     const marketEvents = (hub?.events || []).filter((event) => event.eventType === 'dividend');
-    const mappedMarket: DividendViewEvent[] = marketEvents.map((event) => ({
-      ...event,
-      dividendAmount: extractDividendAmount(event),
-      upcoming: isUpcoming(event),
-    }));
+    const mappedMarket: DividendViewEvent[] = marketEvents.map((event) => {
+      const metrics = extractDividendMetrics(event);
+      return {
+        ...event,
+        ...metrics,
+        dividendAmount: extractDividendAmount(event),
+        upcoming: isUpcoming(event),
+      };
+    });
 
     const today = new Date().toISOString().slice(0, 10);
     const mappedLocal = localDividendRecords
@@ -550,6 +638,22 @@ export default function DividendCalendarPage() {
           dividendAmount: amount,
           upcoming,
           sourceLinks: [] as Array<{ label: string; url: string }>,
+          currentPrice: null,
+          week52High: null,
+          week52Low: null,
+          pricePositionPct: null,
+          volume: null,
+          avgVolume: null,
+          marketCap: null,
+          dividendFrequency: null,
+          dividendFrequencyAr: null,
+          dividendAnnual: null,
+          dividendLast12m: null,
+          dividendAverage: null,
+          dividendYieldPct: null,
+          payoutRatioPct: null,
+          nextExDate: null,
+          nextPaymentDate: null,
         };
       })
       .filter((item): item is DividendViewEvent => item !== null);
@@ -603,6 +707,11 @@ export default function DividendCalendarPage() {
     };
   }, [dividendEvents, hub?.updatedAt]);
 
+  const upcomingEvents = useMemo(
+    () => filteredEvents.filter((event) => event.upcoming).slice(0, 8),
+    [filteredEvents]
+  );
+
   return (
     <div className="min-h-screen bg-background" dir="rtl">
       <Sidebar />
@@ -617,7 +726,7 @@ export default function DividendCalendarPage() {
                 تقويم توزيع الأرباح
               </h1>
               <p className="text-muted-foreground text-sm mt-1">
-                التقويم الآن مرتبط بالمحافظ وقوائم المتابعة داخل المشروع ويعرض توزيعات الأرباح القادمة في نفس الصفحة.
+                التقويم مرتبط بالمحافظ وقوائم المتابعة ويعرض التوزيعات القادمة مع السعر الحالي ونطاق 52 أسبوع وحجم التداول وتكرار التوزيعات، مع دعم كاش قاعدة البيانات لتسريع الاسترجاع.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -740,6 +849,40 @@ export default function DividendCalendarPage() {
 
           <Card>
             <CardHeader className="pb-2">
+              <CardTitle className="text-base">التوزيعات القادمة</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {upcomingEvents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">لا توجد توزيعات قادمة ضمن الفلاتر الحالية.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+                  {upcomingEvents.map((event) => (
+                    <div key={`${event.id}_upcoming`} className="rounded-lg border bg-muted/30 p-2 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold">{event.symbol}</span>
+                        <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                          قادم
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">{event.name}</div>
+                      <div className="text-xs">
+                        التاريخ: <span className="font-medium">{formatDate(event.date)}</span>
+                      </div>
+                      <div className="text-xs">
+                        التوزيع: <span className="font-medium">{formatMoney(event.dividendAmount, event.currency || event.currencySymbol, 4)}</span>
+                      </div>
+                      <div className="text-xs">
+                        التكرار: <span className="font-medium">{event.dividendFrequencyAr || '—'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
               <CardTitle className="text-base">التوزيعات داخل المشروع</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
@@ -760,6 +903,11 @@ export default function DividendCalendarPage() {
                         <TableHead className="text-right">الرمز</TableHead>
                         <TableHead className="text-right">الأصل</TableHead>
                         <TableHead className="text-right">النوع</TableHead>
+                        <TableHead className="text-right">سعر السهم</TableHead>
+                        <TableHead className="text-right min-w-[240px]">أدنى/أعلى 52 أسبوع</TableHead>
+                        <TableHead className="text-right">حجم التداول</TableHead>
+                        <TableHead className="text-right min-w-[220px]">ملخص التوزيعات</TableHead>
+                        <TableHead className="text-right">عائد التوزيعات (ROI)</TableHead>
                         <TableHead className="text-right">قيمة التوزيع</TableHead>
                         <TableHead className="text-right">التاريخ</TableHead>
                         <TableHead className="text-right">الحالة</TableHead>
@@ -770,6 +918,10 @@ export default function DividendCalendarPage() {
                       {filteredEvents.map((event) => {
                         const amount = event.dividendAmount;
                         const sourceUrl = pickSourceUrl(event);
+                        const hasRange = event.week52Low != null && event.week52High != null && event.week52High > event.week52Low;
+                        const rangePosition = event.pricePositionPct != null
+                          ? Math.max(0, Math.min(100, event.pricePositionPct))
+                          : null;
                         return (
                           <TableRow key={event.id}>
                             <TableCell className="font-semibold">{event.symbol}</TableCell>
@@ -779,9 +931,52 @@ export default function DividendCalendarPage() {
                             </TableCell>
                             <TableCell>{assetTypeLabel(event.assetType)}</TableCell>
                             <TableCell>
-                              {amount != null
-                                ? `${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${event.currency || event.currencySymbol}`
-                                : `— ${event.currency || ''}`}
+                              <div className="font-semibold">{formatMoney(event.currentPrice, event.currency || event.currencySymbol, 4)}</div>
+                              <div className="text-[11px] text-muted-foreground">القيمة السوقية: {formatCompactNumber(event.marketCap)}</div>
+                            </TableCell>
+                            <TableCell>
+                              {hasRange ? (
+                                <div className="space-y-1 min-w-[220px]" dir="ltr">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-red-500">دنى 52: {event.week52Low?.toLocaleString('en-US', { maximumFractionDigits: 4 })}</span>
+                                    <span className="text-green-600">أعلى 52: {event.week52High?.toLocaleString('en-US', { maximumFractionDigits: 4 })}</span>
+                                  </div>
+                                  <div className="h-2 rounded-full bg-gradient-to-r from-red-300 via-amber-300 to-green-300 relative overflow-hidden">
+                                    {rangePosition != null && (
+                                      <span
+                                        className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-amber-700 border border-white shadow-sm"
+                                        style={{ left: `${rangePosition}%` }}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="text-center text-[11px] text-muted-foreground">
+                                    السعر الحالي: {formatMoney(event.currentPrice, event.currency || event.currencySymbol, 4)}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">غير متاح</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <div className="font-semibold">حجم: {formatCompactNumber(event.volume)}</div>
+                              <div className="text-[11px] text-muted-foreground">متوسط: {formatCompactNumber(event.avgVolume)}</div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="space-y-1 text-xs min-w-[210px]">
+                                <div>التكرار: <span className="font-medium">{event.dividendFrequencyAr || '—'}</span></div>
+                                <div>آخر 12 شهر: <span className="font-medium">{formatMoney(event.dividendLast12m, event.currency || event.currencySymbol, 4)}</span></div>
+                                <div>توزيع سنوي: <span className="font-medium">{formatMoney(event.dividendAnnual, event.currency || event.currencySymbol, 4)}</span></div>
+                                {event.nextExDate && <div>القادم: <span className="font-medium">{formatDate(event.nextExDate)}</span></div>}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className={cn('font-semibold', event.dividendYieldPct != null && event.dividendYieldPct > 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-muted-foreground')}>
+                                {formatPercent(event.dividendYieldPct)}
+                              </div>
+                              <div className="text-[11px] text-muted-foreground">Payout: {formatPercent(event.payoutRatioPct)}</div>
+                            </TableCell>
+                            <TableCell>
+                              {amount != null ? formatMoney(amount, event.currency || event.currencySymbol, 4) : `— ${event.currency || ''}`}
                             </TableCell>
                             <TableCell>{formatDate(event.date)}</TableCell>
                             <TableCell>

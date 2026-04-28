@@ -274,6 +274,15 @@ export const PAGES: PageEntry[] = [
     accountDomains: ['chart'],
   },
   {
+    path: '/technical-schools',
+    labelAr: 'المدارس الفنية',
+    labelEn: 'Technical Schools',
+    category: 'analysis',
+    description: 'استراتيجية AI تجمع إليوت ووايكوف والهارمونيك والكلاسيكي مع الشارت والمؤشرات.',
+    marketDomains: ['stocks', 'indices', 'crypto', 'forex', 'commodities', 'funds'],
+    accountDomains: ['ai', 'chart', 'portfolios'],
+  },
+  {
     path: '/fundamental-analysis',
     labelAr: 'التحليل الأساسي',
     labelEn: 'Fundamental Analysis',

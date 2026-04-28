@@ -9,6 +9,59 @@ interface Quote {
   source: string;
 }
 
+function toFinitePositive(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+async function quoteYahooLive(symbol: string): Promise<Quote | null> {
+  const fields = [
+    'regularMarketPrice',
+    'regularMarketChange',
+    'regularMarketChangePercent',
+    'regularMarketPreviousClose',
+    'regularMarketVolume',
+    'preMarketPrice',
+    'preMarketChange',
+    'preMarketChangePercent',
+    'postMarketPrice',
+    'postMarketChange',
+    'postMarketChangePercent',
+    'marketState',
+    'currency',
+    'financialCurrency',
+  ].join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${encodeURIComponent(fields)}`;
+  const res = await fetch(url, {
+    next: { revalidate: 15 },
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioBot/1.0)', Accept: 'application/json' },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const q = data?.quoteResponse?.result?.[0];
+  if (!q) return null;
+
+  const marketState = String(q.marketState || '').toUpperCase();
+  const prePrice = toFinitePositive(q.preMarketPrice);
+  const postPrice = toFinitePositive(q.postMarketPrice);
+  const regularPrice = toFinitePositive(q.regularMarketPrice);
+  const usePre = marketState.includes('PRE') && prePrice != null;
+  const usePost = marketState.includes('POST') && postPrice != null;
+  const price = usePre ? prePrice : usePost ? postPrice : regularPrice;
+  if (price == null) return null;
+
+  const change = usePre ? Number(q.preMarketChange ?? 0) : usePost ? Number(q.postMarketChange ?? 0) : Number(q.regularMarketChange ?? 0);
+  const changePct = usePre ? Number(q.preMarketChangePercent ?? 0) : usePost ? Number(q.postMarketChangePercent ?? 0) : Number(q.regularMarketChangePercent ?? 0);
+  return {
+    symbol,
+    price,
+    change,
+    changePct,
+    currency: q.currency ?? q.financialCurrency ?? undefined,
+    source: usePre || usePost ? 'Yahoo Finance Quote API (extended hours)' : 'Yahoo Finance Quote API',
+  };
+}
+
 async function quoteAlphaVantage(symbol: string): Promise<Quote | null> {
   const key = process.env.ALPHA_VANTAGE_API_KEY;
   if (!key) return null;
@@ -89,7 +142,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const providers = [quoteAlphaVantage, quoteFmp, quoteTwelveData, quoteYahooFallback];
+    const providers = [quoteYahooLive, quoteAlphaVantage, quoteFmp, quoteTwelveData, quoteYahooFallback];
     for (const provider of providers) {
       const quote = await provider(symbol);
       if (quote) return NextResponse.json({ quote });

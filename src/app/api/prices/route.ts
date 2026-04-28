@@ -1,4 +1,8 @@
 import { NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { decrypt } from '@/lib/security/encryption';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
 // ================================
 // COMPREHENSIVE REAL-TIME PRICES API
@@ -19,9 +23,19 @@ interface LivePrice {
   averageVolume10Day?: number;
   shortRatio?: number;
   shortPercentOfFloat?: number;
+  sharesShort?: number;
+  sharesOutstanding?: number;
+  floatShares?: number;
+  shortDataSource?: string;
+  shortDataChecked?: boolean;
   marketCap?: number;
   source: string;
   lastUpdate: number;
+}
+
+interface MarketDataApiKeys {
+  polygon?: string;
+  massive?: string;
 }
 
 // Cache
@@ -31,6 +45,16 @@ let cache: {
 } = { data: {}, timestamp: 0 };
 
 const CACHE_DURATION = 30000;
+
+let marketDataKeysCache: {
+  keys: MarketDataApiKeys;
+  timestamp: number;
+} = {
+  keys: {},
+  timestamp: 0,
+};
+const MARKET_KEYS_CACHE_DURATION = 5 * 60 * 1000;
+let saudiStaticMetricsPromise: Promise<Record<string, Partial<LivePrice>>> | null = null;
 
 // ========== ALL GULF & ARAB MARKETS ==========
 const ARAB_STOCKS = {
@@ -277,17 +301,491 @@ const FOREX_PAIRS = [
   'EURGBP=X', 'EURJPY=X', 'GBPJPY=X',
 ];
 
+function toFiniteNumber(value: unknown): number | undefined {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+function parseLooseNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.replace(/[^0-9.+-]/g, '');
+  if (!cleaned) return undefined;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseCompactMarketCap(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.trim().toUpperCase().replace(/,/g, '');
+  if (!cleaned || cleaned === '-') return undefined;
+  const matched = cleaned.match(/^([+-]?\d+(?:\.\d+)?)([KMBT])?$/);
+  if (!matched) return parseLooseNumber(cleaned);
+  const base = Number(matched[1]);
+  if (!Number.isFinite(base)) return undefined;
+  const unit = matched[2];
+  const factor = unit === 'T'
+    ? 1e12
+    : unit === 'B'
+      ? 1e9
+      : unit === 'M'
+        ? 1e6
+        : unit === 'K'
+          ? 1e3
+          : 1;
+  return base * factor;
+}
+
+function isLikelyUsEquitySymbol(symbol: string): boolean {
+  const upper = String(symbol || '').trim().toUpperCase();
+  if (!upper) return false;
+  if (upper.includes('.') || upper.includes('=') || upper.includes('/') || upper.endsWith('-USD')) return false;
+  return /^[A-Z][A-Z0-9-]{0,9}$/.test(upper);
+}
+
+function isSaudiNumericSymbol(symbol: string): boolean {
+  return /^\d{3,6}$/.test(String(symbol || '').trim().toUpperCase());
+}
+
+function toSaudiBaseSymbol(symbol: string): string {
+  return String(symbol || '').trim().toUpperCase().replace(/\.SAU$/, '').replace(/\.SR$/, '');
+}
+
+function lookupSaudiStaticMetrics(
+  metricsBySymbol: Record<string, Partial<LivePrice>>,
+  symbol: string
+): Partial<LivePrice> {
+  const upper = String(symbol || '').trim().toUpperCase();
+  if (!upper) return {};
+  const base = toSaudiBaseSymbol(upper);
+  return (
+    metricsBySymbol[upper] ||
+    metricsBySymbol[base] ||
+    metricsBySymbol[`${base}.SR`] ||
+    {}
+  );
+}
+
+function lookupMetricsBySymbol<T>(
+  metricsBySymbol: Record<string, T>,
+  symbol: string
+): T | undefined {
+  const upper = String(symbol || '').trim().toUpperCase();
+  if (!upper) return undefined;
+  const base = toSaudiBaseSymbol(upper);
+  return metricsBySymbol[upper] ?? metricsBySymbol[base] ?? metricsBySymbol[`${base}.SR`];
+}
+
+async function loadSaudiStaticMetrics(): Promise<Record<string, Partial<LivePrice>>> {
+  if (saudiStaticMetricsPromise) return saudiStaticMetricsPromise;
+
+  saudiStaticMetricsPromise = (async () => {
+    try {
+      const filePath = path.join(process.cwd(), 'data', 'stocks', 'saudi.json');
+      const raw = await fs.readFile(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const rows = Array.isArray(parsed?.all_stocks) ? parsed.all_stocks : [];
+
+      const metrics: Record<string, Partial<LivePrice>> = {};
+      for (const row of rows) {
+        const base = toSaudiBaseSymbol(String(row?.symbol || ''));
+        if (!isSaudiNumericSymbol(base)) continue;
+
+        const marketCap = parseCompactMarketCap(row?.market_cap);
+        const referencePrice = toFiniteNumber(row?.actual_price) ?? toFiniteNumber(row?.price);
+        const sharesOutstanding =
+          marketCap != null && referencePrice != null && referencePrice > 0
+            ? Math.round(marketCap / referencePrice)
+            : undefined;
+
+        if (marketCap == null && sharesOutstanding == null) continue;
+
+        const payload: Partial<LivePrice> = {};
+        if (marketCap != null && marketCap > 0) payload.marketCap = marketCap;
+        if (sharesOutstanding != null && sharesOutstanding > 0) payload.sharesOutstanding = sharesOutstanding;
+
+        metrics[base] = payload;
+        metrics[`${base}.SR`] = payload;
+      }
+
+      return metrics;
+    } catch {
+      return {};
+    }
+  })();
+
+  return saudiStaticMetricsPromise;
+}
+
+function withSaudiSymbolAliases<T>(data: Record<string, T>): Record<string, T> {
+  const out: Record<string, T> = { ...data };
+  for (const [key, value] of Object.entries(data)) {
+    const upper = String(key || '').trim().toUpperCase();
+    const match = upper.match(/^(\d{3,6})\.SR$/);
+    if (match && !(match[1] in out)) {
+      out[match[1]] = value;
+    }
+  }
+  return out;
+}
+
+function expandSaudiCustomSymbols(rawSymbols: string[]): string[] {
+  const expanded = new Set<string>();
+  for (const symbol of rawSymbols) {
+    const upper = String(symbol || '').trim().toUpperCase();
+    if (!upper) continue;
+    expanded.add(upper);
+    if (isSaudiNumericSymbol(upper)) expanded.add(`${upper}.SR`);
+    if (/^\d{3,6}\.SR$/.test(upper)) expanded.add(upper.replace(/\.SR$/, ''));
+    if (upper.endsWith('.SAU')) expanded.add(upper.replace(/\.SAU$/, '.SR'));
+  }
+  return Array.from(expanded);
+}
+
+async function loadMarketDataApiKeys(): Promise<MarketDataApiKeys> {
+  const now = Date.now();
+  if ((now - marketDataKeysCache.timestamp) < MARKET_KEYS_CACHE_DURATION) {
+    return marketDataKeysCache.keys;
+  }
+
+  function parseSettingSecret(value: unknown): string | null {
+    if (value == null) return null;
+    const raw = typeof value === 'string' ? value : JSON.stringify(value);
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+
+    const variants = new Set<string>([trimmed]);
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+      variants.add(trimmed.slice(1, -1).trim());
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string' && parsed.trim()) {
+        variants.add(parsed.trim());
+      }
+    } catch {
+      // ignore
+    }
+
+    for (const candidate of variants) {
+      try {
+        const decrypted = decrypt(candidate);
+        if (decrypted && decrypted.trim().length >= 5) {
+          return decrypted.trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    for (const candidate of variants) {
+      if (!candidate || candidate.length < 8) continue;
+      if (/[{}\[\]\s]/.test(candidate)) continue;
+      const looksEncryptedPayload = /^[A-Za-z0-9+/=]+(?::[A-Za-z0-9+/=]+){1,2}$/.test(candidate);
+      if (looksEncryptedPayload) continue;
+      return candidate;
+    }
+    return null;
+  }
+
+  const keys: MarketDataApiKeys = {};
+
+  try {
+    const settings = await db.setting.findMany({
+      where: {
+        OR: [
+          { key: { startsWith: 'api_key_' } },
+          { key: { contains: ':api_key_' } },
+        ],
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    for (const setting of settings) {
+      const key = String(setting.key || '').trim();
+      if (!key) continue;
+      const provider = key.includes(':api_key_')
+        ? key.split(':api_key_').pop()
+        : key.replace(/^api_key_/, '');
+      if (!provider) continue;
+
+      const secret = parseSettingSecret(setting.value);
+      if (!secret) continue;
+
+      if (provider === 'polygon' && !keys.polygon) {
+        keys.polygon = secret;
+      } else if (provider === 'massive' && !keys.massive) {
+        keys.massive = secret;
+      }
+
+      if (keys.polygon && keys.massive) break;
+    }
+  } catch {
+    // keep empty keys fallback
+  }
+
+  marketDataKeysCache = {
+    keys,
+    timestamp: now,
+  };
+  return keys;
+}
+
+async function fetchYahooQuoteMetrics(symbols: string[]): Promise<Record<string, Partial<LivePrice>>> {
+  if (symbols.length === 0) return {};
+
+  const result: Record<string, Partial<LivePrice>> = {};
+
+  try {
+    const joined = symbols.map((s) => encodeURIComponent(s)).join(',');
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${joined}`,
+      {
+        next: { revalidate: 60 },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        signal: AbortSignal.timeout(12000),
+      }
+    );
+
+    if (!res.ok) return result;
+    const payload = await res.json();
+    const rows = Array.isArray(payload?.quoteResponse?.result) ? payload.quoteResponse.result : [];
+
+    for (const row of rows) {
+      const symbol = String(row?.symbol || '').trim().toUpperCase();
+      if (!symbol) continue;
+
+      const shortRatio = toFiniteNumber(row?.shortRatio);
+      const shortPercentOfFloatRaw = toFiniteNumber(row?.shortPercentOfFloat);
+      const shortPercentOfFloat =
+        shortPercentOfFloatRaw == null
+          ? undefined
+          : Number((shortPercentOfFloatRaw <= 1 ? shortPercentOfFloatRaw * 100 : shortPercentOfFloatRaw).toFixed(2));
+      const sharesShort = toFiniteNumber(row?.sharesShort);
+      const sharesOutstanding = toFiniteNumber(row?.sharesOutstanding);
+      const floatShares = toFiniteNumber(row?.floatShares);
+      const hasShortData = shortRatio != null || shortPercentOfFloat != null || sharesShort != null;
+
+      result[symbol] = {
+        volume: toFiniteNumber(row?.regularMarketVolume),
+        averageVolume: toFiniteNumber(row?.averageDailyVolume3Month),
+        averageVolume10Day: toFiniteNumber(row?.averageDailyVolume10Day),
+        shortRatio: shortRatio != null ? Number(shortRatio.toFixed(2)) : undefined,
+        shortPercentOfFloat,
+        sharesShort,
+        sharesOutstanding,
+        floatShares,
+        marketCap: toFiniteNumber(row?.marketCap),
+        shortDataSource: hasShortData ? 'Yahoo Finance Quote API' : undefined,
+        shortDataChecked: true,
+      };
+    }
+  } catch {
+    return result;
+  }
+
+  return result;
+}
+
+async function fetchNasdaqShortInterestMetrics(symbols: string[]): Promise<Record<string, Partial<LivePrice>>> {
+  const results: Record<string, Partial<LivePrice>> = {};
+  const candidates = symbols
+    .map((s) => String(s || '').trim().toUpperCase())
+    .filter((s) => isLikelyUsEquitySymbol(s));
+  if (candidates.length === 0) return results;
+
+  for (const symbol of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/short-interest?assetclass=stocks`,
+        {
+          next: { revalidate: 60 * 60 },
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          signal: AbortSignal.timeout(12000),
+        }
+      );
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const rows = payload?.data?.shortInterestTable?.rows;
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+      const latest = rows[0] || {};
+
+      const sharesShort = parseLooseNumber(latest.interest);
+      const avgDailyShareVolume = parseLooseNumber(latest.avgDailyShareVolume);
+      const shortRatio = parseLooseNumber(latest.daysToCover);
+
+      if (sharesShort == null && avgDailyShareVolume == null && shortRatio == null) continue;
+
+      results[symbol] = {
+        sharesShort,
+        averageVolume: avgDailyShareVolume,
+        shortRatio: shortRatio != null ? Number(shortRatio.toFixed(2)) : undefined,
+        shortDataSource: 'Nasdaq Short Interest API',
+        shortDataChecked: true,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
+async function fetchNasdaqSummaryMetrics(symbols: string[]): Promise<Record<string, Partial<LivePrice>>> {
+  const results: Record<string, Partial<LivePrice>> = {};
+  const candidates = symbols
+    .map((s) => String(s || '').trim().toUpperCase())
+    .filter((s) => isLikelyUsEquitySymbol(s));
+  if (candidates.length === 0) return results;
+
+  for (const symbol of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/summary?assetclass=stocks`,
+        {
+          next: { revalidate: 60 * 30 },
+          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+          signal: AbortSignal.timeout(12000),
+        }
+      );
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const summaryData = payload?.data?.summaryData || {};
+
+      const volume = parseLooseNumber(summaryData?.ShareVolume?.value);
+      const averageVolume = parseLooseNumber(summaryData?.AverageVolume?.value);
+      const marketCap = parseLooseNumber(summaryData?.MarketCap?.value);
+      const rangeText = String(summaryData?.FiftTwoWeekHighLow?.value || '').trim();
+
+      let low52w: number | undefined;
+      let high52w: number | undefined;
+      if (rangeText) {
+        const parts = rangeText
+          .split('-')
+          .map((part: string) => parseLooseNumber(part))
+          .filter((v): v is number => v != null);
+        if (parts.length >= 2) {
+          low52w = Math.min(parts[0], parts[1]);
+          high52w = Math.max(parts[0], parts[1]);
+        }
+      }
+
+      if (volume == null && averageVolume == null && marketCap == null && low52w == null && high52w == null) continue;
+
+      results[symbol] = {
+        volume,
+        averageVolume,
+        marketCap,
+        low52w,
+        high52w,
+        shortDataSource: 'Nasdaq Summary API',
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
+async function fetchReferenceTickerMetricsFromPolygon(symbols: string[], apiKey?: string): Promise<Record<string, Partial<LivePrice>>> {
+  const results: Record<string, Partial<LivePrice>> = {};
+  if (!apiKey) return results;
+
+  const candidates = symbols
+    .map((s) => String(s || '').trim().toUpperCase())
+    .filter((s) => isLikelyUsEquitySymbol(s));
+  if (candidates.length === 0) return results;
+
+  for (const symbol of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.polygon.io/v3/reference/tickers/${encodeURIComponent(symbol)}?apiKey=${encodeURIComponent(apiKey)}`,
+        {
+          next: { revalidate: 60 * 60 },
+          signal: AbortSignal.timeout(12000),
+        }
+      );
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const row = payload?.results || {};
+
+      const sharesOutstanding = toFiniteNumber(row?.share_class_shares_outstanding) ?? toFiniteNumber(row?.weighted_shares_outstanding);
+      const marketCap = toFiniteNumber(row?.market_cap);
+
+      if (sharesOutstanding == null && marketCap == null) continue;
+
+      results[symbol] = {
+        sharesOutstanding,
+        marketCap,
+        shortDataSource: 'Polygon Reference API',
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
+async function fetchReferenceTickerMetricsFromMassive(symbols: string[], apiKey?: string): Promise<Record<string, Partial<LivePrice>>> {
+  const results: Record<string, Partial<LivePrice>> = {};
+  if (!apiKey) return results;
+
+  const candidates = symbols
+    .map((s) => String(s || '').trim().toUpperCase())
+    .filter((s) => isLikelyUsEquitySymbol(s));
+  if (candidates.length === 0) return results;
+
+  for (const symbol of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.massive.com/v3/reference/tickers/${encodeURIComponent(symbol)}`,
+        {
+          next: { revalidate: 60 * 60 },
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(12000),
+        }
+      );
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const row = payload?.results || {};
+
+      const sharesOutstanding = toFiniteNumber(row?.share_class_shares_outstanding) ?? toFiniteNumber(row?.weighted_shares_outstanding);
+      const marketCap = toFiniteNumber(row?.market_cap);
+
+      if (sharesOutstanding == null && marketCap == null) continue;
+
+      results[symbol] = {
+        sharesOutstanding,
+        marketCap,
+        shortDataSource: 'Massive Reference API',
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
 // ========== FETCH FUNCTIONS ==========
 
 async function fetchFromYahoo(symbols: string[]): Promise<Record<string, LivePrice>> {
   const results: Record<string, LivePrice> = {};
   const now = Date.now();
+  const saudiStaticMetrics = await loadSaudiStaticMetrics();
   
   // Yahoo Finance API - batch request
   for (let i = 0; i < symbols.length; i += 20) {
     const batch = symbols.slice(i, i + 20);
     
     try {
+      const quoteMetrics = await fetchYahooQuoteMetrics(batch);
       // Use query1 for real-time quotes
       const promises = batch.map(async (symbol) => {
         try {
@@ -307,11 +805,23 @@ async function fetchFromYahoo(symbols: string[]): Promise<Record<string, LivePri
           const quote = result?.indicators?.quote?.[0];
           
           if (!meta) return null;
+
+          const symbolKey = String(symbol).toUpperCase();
+          const quoteMetricsForSymbol = lookupMetricsBySymbol(quoteMetrics, symbolKey) || {};
+          const staticSaudiMetricsForSymbol = lookupSaudiStaticMetrics(saudiStaticMetrics, symbolKey);
           
           const price = meta.regularMarketPrice || quote?.close?.slice(-1)[0] || 0;
           const prevClose = meta.previousClose || quote?.close?.slice(-2)[0] || price;
           const change = price - prevClose;
           const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+          const mergedSharesOutstanding =
+            quoteMetricsForSymbol.sharesOutstanding ?? staticSaudiMetricsForSymbol.sharesOutstanding;
+          const mergedMarketCap =
+            quoteMetricsForSymbol.marketCap
+            ?? staticSaudiMetricsForSymbol.marketCap
+            ?? (mergedSharesOutstanding != null && price > 0 ? mergedSharesOutstanding * price : undefined);
+          const mergedFloatShares =
+            quoteMetricsForSymbol.floatShares ?? staticSaudiMetricsForSymbol.floatShares;
           
           return {
             symbol,
@@ -321,11 +831,14 @@ async function fetchFromYahoo(symbols: string[]): Promise<Record<string, LivePri
               changePct,
               high: quote?.high?.slice(-1)[0],
               low: quote?.low?.slice(-1)[0],
-              high52w: meta.fiftyTwoWeekHigh || null,
-              low52w: meta.fiftyTwoWeekLow || null,
-              volume: quote?.volume?.slice(-1)[0],
-              averageVolume: meta.averageDailyVolume3Month || undefined,
-              averageVolume10Day: meta.averageDailyVolume10Day || undefined,
+              high52w: meta.fiftyTwoWeekHigh || quoteMetricsForSymbol.high52w || null,
+              low52w: meta.fiftyTwoWeekLow || quoteMetricsForSymbol.low52w || null,
+              volume: quote?.volume?.slice(-1)[0] ?? quoteMetricsForSymbol.volume,
+              averageVolume: meta.averageDailyVolume3Month || quoteMetricsForSymbol.averageVolume || undefined,
+              averageVolume10Day: meta.averageDailyVolume10Day || quoteMetricsForSymbol.averageVolume10Day || undefined,
+              sharesOutstanding: mergedSharesOutstanding,
+              floatShares: mergedFloatShares,
+              marketCap: mergedMarketCap,
               source: 'Yahoo Finance',
               lastUpdate: now
             }
@@ -356,10 +869,42 @@ async function fetchFromYahoo(symbols: string[]): Promise<Record<string, LivePri
 async function fetchFromYahooExtended(symbols: string[]): Promise<Record<string, LivePrice>> {
   const results: Record<string, LivePrice> = {};
   const now = Date.now();
+  const marketDataKeys = await loadMarketDataApiKeys();
+  const saudiStaticMetrics = await loadSaudiStaticMetrics();
 
   for (let i = 0; i < symbols.length; i += 20) {
     const batch = symbols.slice(i, i + 20);
     try {
+      const quoteMetrics = await fetchYahooQuoteMetrics(batch);
+      const nasdaqFallbackSymbols = batch.filter((symbol) => {
+        const metrics = lookupMetricsBySymbol(quoteMetrics, symbol);
+        if (!metrics) return isLikelyUsEquitySymbol(symbol);
+        return (
+          metrics.shortRatio == null &&
+          metrics.shortPercentOfFloat == null &&
+          metrics.sharesShort == null &&
+          isLikelyUsEquitySymbol(symbol)
+        );
+      });
+      const nasdaqMetrics = await fetchNasdaqShortInterestMetrics(nasdaqFallbackSymbols);
+      const usBatch = batch.filter((symbol) => isLikelyUsEquitySymbol(symbol));
+      const referenceFallbackSymbols = usBatch.filter((symbol) => {
+        const metrics = lookupMetricsBySymbol(quoteMetrics, symbol);
+        return (
+          !metrics ||
+          (metrics.sharesOutstanding == null && metrics.marketCap == null)
+        );
+      });
+      const summaryFallbackSymbols = usBatch.filter((symbol) => {
+        const metrics = lookupMetricsBySymbol(quoteMetrics, symbol);
+        return !metrics || (metrics.volume == null || metrics.averageVolume == null || metrics.marketCap == null);
+      });
+
+      const [polygonReferenceMetrics, massiveReferenceMetrics, nasdaqSummaryMetrics] = await Promise.all([
+        fetchReferenceTickerMetricsFromPolygon(referenceFallbackSymbols, marketDataKeys.polygon),
+        fetchReferenceTickerMetricsFromMassive(referenceFallbackSymbols, marketDataKeys.massive),
+        fetchNasdaqSummaryMetrics(summaryFallbackSymbols),
+      ]);
       const promises = batch.map(async (symbol) => {
         try {
           const res = await fetch(
@@ -376,6 +921,49 @@ async function fetchFromYahooExtended(symbols: string[]): Promise<Record<string,
           const meta = result?.meta;
           const quote = result?.indicators?.quote?.[0];
           if (!meta) return null;
+          const symbolKey = String(symbol).toUpperCase();
+          const metrics = lookupMetricsBySymbol(quoteMetrics, symbolKey) || {};
+          const fallbackMetrics = lookupMetricsBySymbol(nasdaqMetrics, symbolKey) || {};
+          const summaryMetrics = lookupMetricsBySymbol(nasdaqSummaryMetrics, symbolKey) || {};
+          const referenceMetrics = {
+            ...(lookupMetricsBySymbol(massiveReferenceMetrics, symbolKey) || {}),
+            ...(lookupMetricsBySymbol(polygonReferenceMetrics, symbolKey) || {}),
+          };
+          const staticSaudiMetricsForSymbol = lookupSaudiStaticMetrics(saudiStaticMetrics, symbolKey);
+
+          const sourceParts = new Set<string>();
+          if (metrics.shortDataSource) sourceParts.add(metrics.shortDataSource);
+          if (fallbackMetrics.shortDataSource) sourceParts.add(fallbackMetrics.shortDataSource);
+          if (summaryMetrics.shortDataSource) sourceParts.add(summaryMetrics.shortDataSource);
+          if (referenceMetrics.shortDataSource) sourceParts.add(referenceMetrics.shortDataSource);
+
+          const mergedMetrics: Partial<LivePrice> = {
+            ...summaryMetrics,
+            ...staticSaudiMetricsForSymbol,
+            ...referenceMetrics,
+            ...fallbackMetrics,
+            ...metrics,
+            shortRatio: metrics.shortRatio ?? fallbackMetrics.shortRatio,
+            shortPercentOfFloat: metrics.shortPercentOfFloat ?? fallbackMetrics.shortPercentOfFloat,
+            sharesShort: metrics.sharesShort ?? fallbackMetrics.sharesShort,
+            sharesOutstanding:
+              metrics.sharesOutstanding
+              ?? fallbackMetrics.sharesOutstanding
+              ?? referenceMetrics.sharesOutstanding
+              ?? staticSaudiMetricsForSymbol.sharesOutstanding,
+            floatShares: metrics.floatShares ?? fallbackMetrics.floatShares ?? staticSaudiMetricsForSymbol.floatShares,
+            averageVolume: metrics.averageVolume ?? fallbackMetrics.averageVolume ?? summaryMetrics.averageVolume,
+            volume: metrics.volume ?? summaryMetrics.volume,
+            marketCap:
+              metrics.marketCap
+              ?? referenceMetrics.marketCap
+              ?? summaryMetrics.marketCap
+              ?? staticSaudiMetricsForSymbol.marketCap,
+            high52w: metrics.high52w ?? summaryMetrics.high52w,
+            low52w: metrics.low52w ?? summaryMetrics.low52w,
+            shortDataSource: sourceParts.size > 0 ? Array.from(sourceParts).join(' + ') : undefined,
+            shortDataChecked: true,
+          };
 
           const price = meta.regularMarketPrice || quote?.close?.slice(-1)[0] || 0;
           const prevClose = meta.previousClose || quote?.close?.slice(-2)[0] || price;
@@ -394,12 +982,20 @@ async function fetchFromYahooExtended(symbols: string[]): Promise<Record<string,
               price, change, changePct,
               high: quote?.high?.slice(-1)[0],
               low: quote?.low?.slice(-1)[0],
-              high52w: meta.fiftyTwoWeekHigh || null,
-              low52w: meta.fiftyTwoWeekLow || null,
-              volume: quote?.volume?.slice(-1)[0],
-              averageVolume: avgVol3m ? Math.round(avgVol3m) : undefined,
-              averageVolume10Day: avgVol10 ? Math.round(avgVol10) : undefined,
-              source: 'Yahoo Finance',
+              high52w: meta.fiftyTwoWeekHigh || mergedMetrics.high52w || null,
+              low52w: meta.fiftyTwoWeekLow || mergedMetrics.low52w || null,
+              volume: quote?.volume?.slice(-1)[0] ?? mergedMetrics.volume,
+              averageVolume: avgVol3m ? Math.round(avgVol3m) : mergedMetrics.averageVolume,
+              averageVolume10Day: avgVol10 ? Math.round(avgVol10) : mergedMetrics.averageVolume10Day,
+              shortRatio: mergedMetrics.shortRatio,
+              shortPercentOfFloat: mergedMetrics.shortPercentOfFloat,
+              sharesShort: mergedMetrics.sharesShort,
+              sharesOutstanding: mergedMetrics.sharesOutstanding,
+              floatShares: mergedMetrics.floatShares,
+              shortDataSource: mergedMetrics.shortDataSource,
+              shortDataChecked: true,
+              marketCap: mergedMetrics.marketCap,
+              source: mergedMetrics.shortDataSource ? `Yahoo Finance + ${mergedMetrics.shortDataSource}` : 'Yahoo Finance',
               lastUpdate: now,
             } as LivePrice,
           };
@@ -443,14 +1039,21 @@ async function fetchCrypto(): Promise<Record<string, LivePrice>> {
       const mappedSymbol = CRYPTO_SYMBOL_MAP[rawSymbol] || rawSymbol;
 
       let high52w: number | null = null;
-      const low52w: number | null = null;
+      let low52w: number | null = null;
+      const fiftyTwoWeeksAgo = new Date(now);
+      fiftyTwoWeeksAgo.setDate(fiftyTwoWeeksAgo.getDate() - 365);
 
       if (coin.ath && coin.ath_date) {
         const athDate = new Date(coin.ath_date);
-        const fiftyTwoWeeksAgo = new Date(now);
-        fiftyTwoWeeksAgo.setDate(fiftyTwoWeeksAgo.getDate() - 365);
         if (athDate >= fiftyTwoWeeksAgo) {
           high52w = coin.ath;
+        }
+      }
+
+      if (coin.atl && coin.atl_date) {
+        const atlDate = new Date(coin.atl_date);
+        if (atlDate >= fiftyTwoWeeksAgo) {
+          low52w = coin.atl;
         }
       }
 
@@ -487,9 +1090,14 @@ async function fetchCrypto(): Promise<Record<string, LivePrice>> {
 async function fetchCrypto52wFromYahoo(cryptoSymbols: string[]): Promise<Record<string, { high52w: number | null; low52w: number | null }>> {
   const results: Record<string, { high52w: number | null; low52w: number | null }> = {};
 
-  const yahooSymbols = cryptoSymbols
-    .filter(k => k.length <= 10 && !k.includes('_') && !k.includes('-'))
-    .map(k => `${k}-USD`);
+  const yahooSymbols = Array.from(
+    new Set(
+      cryptoSymbols
+        .map((k) => String(k || '').trim().toUpperCase().replace(/-USD$/, '').replace(/\.USD$/, ''))
+        .filter((k) => /^[A-Z0-9]{1,10}$/.test(k))
+        .map((k) => `${k}-USD`)
+    )
+  );
 
   for (let i = 0; i < yahooSymbols.length; i += 10) {
     const batch = yahooSymbols.slice(i, i + 10);
@@ -587,8 +1195,13 @@ export async function GET(request: Request) {
   const market = searchParams.get('market');
   const symbolsParam = searchParams.get('symbols');
   const rawCustomSymbols = symbolsParam ? symbolsParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) : [];
+  const expandedCustomSymbols = expandSaudiCustomSymbols(rawCustomSymbols);
   const cryptoSymbolSet = new Set(Object.values(CRYPTO_SYMBOL_MAP));
-  const customSymbols = rawCustomSymbols.filter(sym => !cryptoSymbolSet.has(sym));
+  const normalizeCryptoTicker = (sym: string) => sym.replace(/-USD$/, '').replace(/\.USD$/, '');
+  const requestedCryptoSymbols = Array.from(
+    new Set(expandedCustomSymbols.map(normalizeCryptoTicker).filter(sym => cryptoSymbolSet.has(sym)))
+  );
+  const customSymbols = expandedCustomSymbols.filter(sym => !cryptoSymbolSet.has(normalizeCryptoTicker(sym)));
   
   // Check cache
   const now = Date.now();
@@ -597,9 +1210,21 @@ export async function GET(request: Request) {
   if (isCacheValid) {
     // If cache is valid, check if all requested custom symbols exist in cache with volume data
     const missingSymbols = customSymbols.filter(sym => {
-      const cached = cache.data[sym] || cache.data[`US_${sym}`];
-      // Re-fetch if missing entirely OR if cached but lacks averageVolume
-      return !cached || cached.averageVolume == null;
+      const saudiAlias = isSaudiNumericSymbol(sym)
+        ? `${sym}.SR`
+        : (/^\d{3,6}\.SR$/.test(sym) ? sym.replace(/\.SR$/, '') : null);
+      const cached =
+        cache.data[sym]
+        || cache.data[`US_${sym}`]
+        || (saudiAlias ? cache.data[saudiAlias] : undefined);
+      if (!cached) return true;
+      if (cached.averageVolume == null) return true;
+
+      if (isLikelyUsEquitySymbol(sym)) {
+        // Force one quote-metrics enrichment pass for US equities if not checked yet.
+        if (!cached.shortDataChecked) return true;
+      }
+      return false;
     });
     if (missingSymbols.length === 0) {
       return NextResponse.json({
@@ -611,7 +1236,7 @@ export async function GET(request: Request) {
       });
     }
     // Fetch missing/incomplete symbols with extended data (volume averages)
-    const newPrices = await fetchFromYahooExtended(missingSymbols);
+    const newPrices = withSaudiSymbolAliases(await fetchFromYahooExtended(missingSymbols));
     Object.assign(cache.data, newPrices);
     return NextResponse.json({
       success: true,
@@ -659,6 +1284,9 @@ export async function GET(request: Request) {
       fetchFromYahoo(INVESTMENT_FUNDS.saudiFunds),
       customSymbols.length > 0 ? fetchFromYahooExtended(customSymbols) : Promise.resolve({}),
     ]);
+
+    const saudiPricesWithAliases = withSaudiSymbolAliases(saudiPrices);
+    const customPricesWithAliases = withSaudiSymbolAliases(customPrices);
     
     // Merge all with prefixes for organization
     Object.assign(allPrices, {
@@ -669,7 +1297,7 @@ export async function GET(request: Request) {
       ...forexPrices,
       
       // Saudi Arabia
-      ...Object.fromEntries(Object.entries(saudiPrices).map(([k, v]) => [`SAUDI_${k}`, v])),
+      ...Object.fromEntries(Object.entries(saudiPricesWithAliases).map(([k, v]) => [`SAUDI_${k}`, v])),
       
       // UAE - Abu Dhabi
       ...Object.fromEntries(Object.entries(abuDhabiPrices).map(([k, v]) => [`ADX_${k}`, v])),
@@ -705,16 +1333,29 @@ export async function GET(request: Request) {
       ...Object.fromEntries(Object.entries(fundsPrices).map(([k, v]) => [`FUND_${k}`, v])),
       
       // Custom Requested Symbols
-      ...customPrices,
+      ...customPricesWithAliases,
     });
     
     // Also add without prefixes for convenience
-    Object.assign(allPrices, saudiPrices, abuDhabiPrices, dubaiPrices, kuwaitPrices, qatarPrices, bahrainPrices, omanPrices, egyptPrices, jordanPrices, customPrices);
+    Object.assign(
+      allPrices,
+      saudiPricesWithAliases,
+      abuDhabiPrices,
+      dubaiPrices,
+      kuwaitPrices,
+      qatarPrices,
+      bahrainPrices,
+      omanPrices,
+      egyptPrices,
+      jordanPrices,
+      customPricesWithAliases
+    );
     
     // Enrich crypto with 52w high/low from Yahoo Finance (1-year OHLC)
     if (Object.keys(cryptoPrices).length > 0) {
       try {
-        const crypto52w = await fetchCrypto52wFromYahoo(Object.keys(cryptoPrices));
+        const cryptoTargets = requestedCryptoSymbols.length > 0 ? requestedCryptoSymbols : Object.keys(cryptoPrices);
+        const crypto52w = await fetchCrypto52wFromYahoo(cryptoTargets);
         for (const [baseKey, data] of Object.entries(crypto52w)) {
           if (allPrices[baseKey]) {
             if (data.high52w != null) allPrices[baseKey].high52w = data.high52w;
@@ -737,7 +1378,7 @@ export async function GET(request: Request) {
       timestamp: now,
       count: Object.keys(allPrices).length,
       markets: {
-        saudi: Object.keys(saudiPrices).length,
+        saudi: Object.keys(saudiPricesWithAliases).length,
         abuDhabi: Object.keys(abuDhabiPrices).length,
         dubai: Object.keys(dubaiPrices).length,
         kuwait: Object.keys(kuwaitPrices).length,

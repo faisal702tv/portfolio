@@ -171,7 +171,7 @@ export function useLiveStockMovers() {
     let mounted = true;
     async function fetchMovers() {
       try {
-        const res = await fetch('/api/live-prices');
+        const res = await fetch('/api/market-hub?domain=saudi', { cache: 'no-store' });
         if (!res.ok) return;
         const json = await res.json();
         if (!json.success || !json.data) return;
@@ -189,14 +189,16 @@ export function useLiveStockMovers() {
         const stocks: StockMover[] = [];
         for (const [key, value] of Object.entries(json.data)) {
           if (key.endsWith('.SR') && STOCK_NAMES[key]) {
-            const d = value as any;
+            const d = value as { price?: unknown; change?: unknown; changePct?: unknown };
+            const price = Number(d.price);
+            if (!Number.isFinite(price) || price <= 0) continue;
             stocks.push({
               symbol: key,
               name: STOCK_NAMES[key],
-              price: d.price,
-              change: d.change,
-              changePct: d.changePct,
-              value: d.price * 1000000, // approximate
+              price,
+              change: Number.isFinite(Number(d.change)) ? Number(d.change) : 0,
+              changePct: Number.isFinite(Number(d.changePct)) ? Number(d.changePct) : 0,
+              value: price * 1000000, // approximate
             });
           }
         }

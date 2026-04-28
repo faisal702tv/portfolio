@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { verifyToken, UserPayload } from '@/lib/auth';
+import { verifyToken } from '@/lib/auth';
 import { createPortfolioSchema, addStockSchema, addBondSchema, addFundSchema } from '@/lib/validations';
-import { createHandler } from '@/lib/api-handler';
+
+function isDbUnavailable(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  return /connectionfailed|unable to open connection|p1000|p1001|p1017|database/i.test(text.toLowerCase());
+}
 
 function getUserFromRequest(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -83,6 +87,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ portfolios: enriched });
   } catch (error) {
     console.error('Get portfolios error:', error);
+    if (isDbUnavailable(error)) {
+      return NextResponse.json({
+        portfolios: [],
+        fallback: true,
+        reason: 'db_unavailable',
+      });
+    }
     return NextResponse.json({ error: 'حدث خطأ في الخادم' }, { status: 500 });
   }
 }

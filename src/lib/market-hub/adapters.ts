@@ -24,6 +24,11 @@ function str(value: unknown): string | undefined {
   return s.length === 0 ? undefined : s;
 }
 
+function obj(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 /** محوّل استجابات `/api/prices` و `/api/live-prices` (نفس الشكل). */
 export function adaptPricesResponse(
   raw: unknown,
@@ -49,13 +54,20 @@ export function adaptPricesResponse(
       high52w: num(e.high52w ?? e.fiftyTwoWeekHigh),
       low52w: num(e.low52w ?? e.fiftyTwoWeekLow),
       volume: num(e.volume),
-      averageVolume: num(e.averageVolume ?? e.averageVolume10Day),
+      averageVolume: num(e.averageVolume),
+      averageVolume10Day: num(e.averageVolume10Day ?? e.averageDailyVolume10Day),
+      shortRatio: num(e.shortRatio),
+      shortPercentOfFloat: num(e.shortPercentOfFloat),
+      sharesShort: num(e.sharesShort),
+      sharesOutstanding: num(e.sharesOutstanding),
+      floatShares: num(e.floatShares),
+      shortDataSource: str(e.shortDataSource) ?? null,
       marketCap: num(e.marketCap),
       currency: str(e.currency),
       exchange: str(e.exchange),
       domain,
-      source: str(e.source) ?? null,
-      live: Boolean(e.live ?? e.source),
+      source: str(e.source ?? e.shortDataSource) ?? null,
+      live: Boolean(e.live ?? e.source ?? e.shortDataSource),
       lastUpdate: numOr(e.lastUpdate, Date.now()),
     };
   }
@@ -102,12 +114,20 @@ export function adaptTickerResponse(
       high52w: num(e.high52w ?? e.fiftyTwoWeekHigh),
       low52w: num(e.low52w ?? e.fiftyTwoWeekLow),
       volume: num(e.volume),
+      averageVolume: num(e.averageVolume),
+      averageVolume10Day: num(e.averageVolume10Day ?? e.averageDailyVolume10Day),
+      shortRatio: num(e.shortRatio),
+      shortPercentOfFloat: num(e.shortPercentOfFloat),
+      sharesShort: num(e.sharesShort),
+      sharesOutstanding: num(e.sharesOutstanding),
+      floatShares: num(e.floatShares),
+      shortDataSource: str(e.shortDataSource) ?? null,
       marketCap: num(e.marketCap),
       currency: str(e.currency),
       exchange: str(e.exchange),
       domain,
-      source: str(e.source) ?? null,
-      live: Boolean(e.live ?? e.source),
+      source: str(e.source ?? e.shortDataSource) ?? null,
+      live: Boolean(e.live ?? e.source ?? e.shortDataSource),
       lastUpdate: numOr(e.lastUpdate, Date.now()),
     };
   }
@@ -116,6 +136,68 @@ export function adaptTickerResponse(
 
 /** محوّل `/api/forex`. */
 export function adaptForexResponse(raw: unknown): Record<string, MarketQuote> {
+  if (!raw || typeof raw !== 'object') return {};
+  const r = raw as Record<string, unknown>;
+
+  const categories = obj(r.categories);
+  if (!categories) {
+    return adaptTickerResponse(raw, 'forex');
+  }
+
+  const out: Record<string, MarketQuote> = {};
+  const now = Date.now();
+  const quoteAliasBySuffix: Record<string, string> = {
+    SAR: 'SAR=X',
+    AED: 'AED=X',
+    KWD: 'KWD=X',
+    EGP: 'EGP=X',
+    TRY: 'TRY=X',
+    CNY: 'CNY=X',
+    INR: 'INR=X',
+    MXN: 'MXN=X',
+    ZAR: 'ZAR=X',
+    JOD: 'JOD=X',
+    BHD: 'BHD=X',
+    OMR: 'OMR=X',
+    QAR: 'QAR=X',
+  };
+
+  for (const catValue of Object.values(categories)) {
+    const catObj = obj(catValue);
+    const pairs = catObj && Array.isArray(catObj.pairs) ? catObj.pairs : [];
+    for (const pair of pairs) {
+      const e = obj(pair);
+      if (!e) continue;
+      const symbol = str(e.symbol)?.toUpperCase();
+      if (!symbol) continue;
+
+      const base = str(e.baseCurrency)?.toUpperCase() || (symbol.length >= 6 ? symbol.slice(0, 3) : undefined);
+      const quote = str(e.quoteCurrency)?.toUpperCase() || (symbol.length >= 6 ? symbol.slice(3, 6) : undefined);
+      const yahooLike = base && quote ? `${base}${quote}=X` : undefined;
+      const shortAlias = base === 'USD' && quote ? quoteAliasBySuffix[quote] : undefined;
+      const candidateKeys = [symbol, yahooLike, shortAlias].filter((v): v is string => Boolean(v));
+
+      for (const key of candidateKeys) {
+        out[key] = {
+          symbol: key,
+          name: str(e.name) ?? (base && quote ? `${base}/${quote}` : symbol),
+          price: numOr(e.price),
+          change: num(e.change),
+          changePct: num(e.changePct ?? e.change_pct),
+          high: num(e.high),
+          low: num(e.low),
+          currency: quote,
+          exchange: 'FOREX',
+          domain: 'forex',
+          source: str(e.source) ?? 'forex_api',
+          live: Boolean(e.isLive ?? true),
+          lastUpdate: numOr(e.lastUpdate, now),
+        };
+      }
+    }
+  }
+
+  if (Object.keys(out).length > 0) return out;
   return adaptTickerResponse(raw, 'forex');
 }
 
@@ -143,28 +225,73 @@ export function adaptFundsResponse(
 ): Record<string, MarketQuote> {
   if (!raw || typeof raw !== 'object') return {};
   const r = raw as Record<string, unknown>;
-  const candidates: unknown[] = [];
-  for (const key of ['funds', 'sukuk', 'bonds', 'reits', 'etfs', 'items', 'data']) {
-    const v = r[key];
-    if (Array.isArray(v)) candidates.push(...v);
+
+  const candidates: Array<{ value: unknown; fallbackSymbol?: string }> = [];
+  const pushCandidates = (value: unknown, fallbackPrefix?: string) => {
+    if (Array.isArray(value)) {
+      value.forEach((entry, idx) => {
+        candidates.push({
+          value: entry,
+          fallbackSymbol: fallbackPrefix ? `${fallbackPrefix}_${idx + 1}` : undefined,
+        });
+      });
+      return;
+    }
+    const rec = obj(value);
+    if (!rec) return;
+    for (const [key, entry] of Object.entries(rec)) {
+      candidates.push({
+        value: entry,
+        fallbackSymbol: fallbackPrefix ? `${fallbackPrefix}_${key}` : key,
+      });
+    }
+  };
+
+  pushCandidates(r.items, 'ITEM');
+  pushCandidates(r.data, 'DATA');
+  pushCandidates(r.bonds, 'BOND');
+  pushCandidates(r.etfs, 'ETF');
+  pushCandidates(r.reits, 'REIT');
+
+  const fundsObj = obj(r.funds);
+  if (fundsObj) {
+    for (const [region, list] of Object.entries(fundsObj)) {
+      pushCandidates(list, `FUND_${region.toUpperCase()}`);
+    }
+  } else {
+    pushCandidates(r.funds, 'FUND');
   }
-  if (candidates.length === 0 && Array.isArray(r)) candidates.push(...(r as unknown[]));
+
+  const sukukObj = obj(r.sukuk);
+  if (sukukObj) {
+    for (const [bucket, list] of Object.entries(sukukObj)) {
+      pushCandidates(list, `SUKUK_${bucket.toUpperCase()}`);
+    }
+  } else {
+    pushCandidates(r.sukuk, 'SUKUK');
+  }
+
+  if (candidates.length === 0 && Array.isArray(raw)) {
+    raw.forEach((entry, idx) => candidates.push({ value: entry, fallbackSymbol: `ITEM_${idx + 1}` }));
+  }
+
   const out: Record<string, MarketQuote> = {};
-  for (const item of candidates) {
-    if (!item || typeof item !== 'object') continue;
-    const e = item as Record<string, unknown>;
-    const symbol = str(e.symbol ?? e.code ?? e.id);
+  for (const candidate of candidates) {
+    const e = obj(candidate.value);
+    if (!e) continue;
+    const symbol = str(e.symbol ?? e.code ?? e.id ?? candidate.fallbackSymbol);
     if (!symbol) continue;
     out[symbol] = {
       symbol,
-      name: str(e.name ?? e.title),
+      name: str(e.name ?? e.title ?? e.nameEn),
       price: numOr(e.price ?? e.nav ?? e.value),
       change: num(e.change),
       changePct: num(e.changePct ?? e.change_pct ?? e.yield),
       domain,
       currency: str(e.currency),
+      exchange: str(e.exchange),
       source: str(e.source) ?? null,
-      live: Boolean(e.live),
+      live: Boolean(e.live ?? e.isLive ?? true),
       lastUpdate: numOr(e.lastUpdate, Date.now()),
     };
   }

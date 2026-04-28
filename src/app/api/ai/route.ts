@@ -56,8 +56,9 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
       'glm-4.7-flash', 'glm-4.5-flash',
       'BigPickle-51', 'MiMo-V2-Omni', 'MiMo-V2-Pro',
       'MiniMax-M2.5', 'Nemotron-3-Super',
-      'glm-5.1', 'glm-5', 'glm-5-turbo',
-      'glm-4.7', 'glm-4.7-flashx', 'glm-4.6',
+      'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-5v-turbo',
+      'glm-4.7', 'glm-4.7-flashx', 'glm-4.6', 'glm-4.6v',
+      'glm-4-long',
       'glm-4.5', 'glm-4.5-x', 'glm-4.5-air', 'glm-4.5-airx',
       'glm-4-32b-0414-128k',
     ],
@@ -65,16 +66,18 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
   },
   openai: {
     models: [
-      // GPT-5.4 series (latest 2026)
+      // GPT-5.5 series (latest April 2026)
+      'gpt-5.5', 'gpt-5.5-pro',
+      // GPT-5.4 series
       'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano',
-      // GPT-5 series
-      'gpt-5',
+      // GPT-5.3 series
+      'gpt-5.3-codex', 'gpt-5.3-instant', 'gpt-5',
       // GPT-4.1 series
       'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
       // GPT-4o series
       'gpt-4o', 'gpt-4o-mini',
       // o-series (reasoning)
-      'o3', 'o3-pro', 'o3-mini', 'o4-mini',
+      'o3', 'o3-pro', 'o3-mini', 'o4-mini', 'o4-mini-high',
       'o1', 'o1-pro', 'o1-mini',
       // Codex
       'codex-mini-latest',
@@ -83,6 +86,8 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
   },
   anthropic: {
     models: [
+      // Claude 4.7 (latest 2026)
+      'claude-opus-4-7-20250410',
       // Claude 4.6 (latest 2026)
       'claude-opus-4-6-20260205', 'claude-sonnet-4-6-20260220',
       // Claude 4
@@ -109,6 +114,8 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
   },
   google: {
     models: [
+      // Gemma 4 (latest 2026)
+      'gemma-4-31b-it', 'gemma-4-26b-a4b-it',
       // Gemini 3.1 (latest 2026)
       'gemini-3.1-pro-preview',
       // Gemini 3
@@ -124,6 +131,8 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
   },
   deepseek: {
     models: [
+      // V4 (latest 2026)
+      'deepseek-v4-flash', 'deepseek-v4-pro',
       // V3.2 (current API)
       'deepseek-chat', 'deepseek-reasoner',
     ],
@@ -139,7 +148,7 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
       // OpenAI open-source
       'openai/gpt-oss-120b', 'openai/gpt-oss-20b',
       // Qwen
-      'qwen/qwen-3-32b', 'qwen-qwq-32b',
+      'qwen/qwen-3-32b', 'qwen-qwq-32b', 'qwen/qwen3.6-27b',
       // Kimi
       'moonshotai/kimi-k2-instruct-0905',
       // DeepSeek on Groq
@@ -186,24 +195,29 @@ const MODEL_CONFIGS: Record<Provider, { models: string[]; endpoint: string }> = 
   openrouter: {
     models: [
       'openrouter/free',
-      'qwen/qwen3.6-plus:free', 'qwen/qwen3-coder:free', 'qwen/qwen3-next-80b-a3b-instruct:free',
+      'qwen/qwen3.6-27b:free', 'qwen/qwen3.6-plus:free', 'qwen/qwen3-coder:free', 'qwen/qwen3-next-80b-a3b-instruct:free',
       'minimax/minimax-m2.5:free',
       'xiaomi/mimo-v2-omni', 'xiaomi/mimo-v2-pro',
       'nvidia/nemotron-3-super-120b-a12b:free', 'nvidia/nemotron-3-nano-30b-a3b:free', 'nvidia/nemotron-nano-9b-v2:free',
       'z-ai/glm-4.5-air:free',
+      'z-ai/glm-5.1', 'z-ai/glm-5v-turbo', 'z-ai/glm-5-turbo', 'z-ai/glm-4.7-flash',
       'openai/gpt-oss-120b:free',
       'deepseek/deepseek-chat-v3-0324:free', 'deepseek/deepseek-r1:free',
       'meta-llama/llama-4-maverick:free', 'meta-llama/llama-4-scout:free',
       'meta-llama/llama-3.3-70b-instruct:free',
-      'google/gemma-3-27b-it:free', 'google/gemma-4-31b-it:free',
+      'google/gemma-4-31b-it:free', 'google/gemma-4-26b-a4b-it:free',
+      'google/gemma-3-27b-it:free',
       'nousresearch/hermes-3-llama-3.1-405b:free',
       'microsoft/phi-4:free',
       'stepfun/step-3.5-flash:free',
-      'openai/gpt-5.4', 'openai/gpt-4.1', 'openai/o3-pro',
-      'anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6',
+      'openai/gpt-5.5', 'openai/gpt-5.3-codex', 'openai/gpt-5.4', 'openai/gpt-4.1', 'openai/o3-pro', 'openai/o4-mini',
+      'anthropic/claude-opus-4.7', 'anthropic/claude-opus-4.6', 'anthropic/claude-sonnet-4.6',
       'google/gemini-3.1-pro', 'google/gemini-2.5-pro',
+      'google/gemma-4-31b-it', 'google/gemma-4-26b-a4b-it',
       'x-ai/grok-4', 'x-ai/grok-3',
+      'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-pro',
       'deepseek/deepseek-chat-v3-0324', 'deepseek/deepseek-r1',
+      'qwen/qwen3.6-plus',
       'mistralai/mistral-large', 'cohere/command-a',
     ],
     endpoint: 'https://openrouter.ai/api/v1/chat/completions'

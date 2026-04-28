@@ -1137,10 +1137,26 @@ async function fetchChartQuote(sym: string): Promise<QuoteData | null> {
 async function fetchV7Chunk(symbols: string[]): Promise<Record<string, QuoteData>> {
   const result: Record<string, QuoteData> = {};
   const syms = symbols.join(',');
+  const fields = [
+    'regularMarketPrice',
+    'regularMarketChange',
+    'regularMarketChangePercent',
+    'regularMarketPreviousClose',
+    'regularMarketVolume',
+    'preMarketPrice',
+    'preMarketChange',
+    'preMarketChangePercent',
+    'postMarketPrice',
+    'postMarketChange',
+    'postMarketChangePercent',
+    'marketState',
+    'currency',
+    'financialCurrency',
+  ].join(',');
 
   const urls = [
-    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose,regularMarketVolume`,
-    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketPreviousClose,regularMarketVolume`,
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=${encodeURIComponent(fields)}`,
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}&fields=${encodeURIComponent(fields)}`,
   ];
 
   for (const url of urls) {
@@ -1153,14 +1169,24 @@ async function fetchV7Chunk(symbols: string[]): Promise<Record<string, QuoteData
       const data = await res.json();
       const quotes = data?.quoteResponse?.result || [];
       for (const q of quotes) {
-        if (!q.symbol || !q.regularMarketPrice) continue;
+        if (!q.symbol) continue;
+        const marketState = String(q.marketState || '').toUpperCase();
+        const prePrice = Number(q.preMarketPrice || 0);
+        const postPrice = Number(q.postMarketPrice || 0);
+        const regularPrice = Number(q.regularMarketPrice || 0);
+        const usePre = marketState.includes('PRE') && Number.isFinite(prePrice) && prePrice > 0;
+        const usePost = marketState.includes('POST') && Number.isFinite(postPrice) && postPrice > 0;
+        const price = usePre ? prePrice : usePost ? postPrice : regularPrice;
+        if (!price || price <= 0) continue;
+        const change = usePre ? q.preMarketChange : usePost ? q.postMarketChange : q.regularMarketChange;
+        const changePct = usePre ? q.preMarketChangePercent : usePost ? q.postMarketChangePercent : q.regularMarketChangePercent;
         result[q.symbol] = {
-          price: q.regularMarketPrice,
-          change: q.regularMarketChange ?? 0,
-          changePct: q.regularMarketChangePercent ?? 0,
+          price,
+          change: change ?? 0,
+          changePct: changePct ?? 0,
           volume: Number(q.regularMarketVolume || 0),
           currency: q.currency || q.financialCurrency || undefined,
-          source: 'yahoo_v7',
+          source: usePre || usePost ? 'yahoo_v7_extended' : 'yahoo_v7',
         };
       }
       if (Object.keys(result).length > 0) return result;

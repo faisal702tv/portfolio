@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatNumber } from '@/lib/helpers';
 import { Globe, TrendingUp, TrendingDown } from 'lucide-react';
-import { marketIndices, cryptoData, commoditiesData } from '@/data/markets';
 
 interface QuoteData {
   price: number;
@@ -106,14 +105,14 @@ export function GlobalMarketsWidget() {
 
   const fetchMarkets = useCallback(async () => {
     try {
-      const res = await fetch('/api/ticker');
+      const res = await fetch('/api/market-hub?domain=indices', { cache: 'no-store' });
       const json = await res.json();
       if (!json.success || !json.data) return;
 
       const raw: Record<string, QuoteData> = json.data;
       const items: MarketIndexDisplay[] = [];
 
-      for (const [groupKey, group] of Object.entries(GROUPS)) {
+      for (const group of Object.values(GROUPS)) {
         for (const sym of group.symbols) {
           const quote = raw[sym.yahoo];
           if (quote && quote.price > 0) {

@@ -101,6 +101,12 @@ interface QuoteLite {
   quoteType?: string;
   marketState?: string;
   regularMarketPrice?: number;
+  regularMarketVolume?: number;
+  averageDailyVolume3Month?: number;
+  averageDailyVolume10Day?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  marketCap?: number;
   currency?: string;
   financialCurrency?: string;
   regularMarketTime?: number;
@@ -109,12 +115,49 @@ interface QuoteLite {
   exchange?: string;
   longName?: string;
   shortName?: string;
+  exDividendDate?: number;
+  dividendDate?: number;
+  dividendRate?: number;
+  dividendYield?: number;
+  trailingAnnualDividendRate?: number;
+  trailingAnnualDividendYield?: number;
+  payoutRatio?: number;
   earningsTimestamp?: number;
   earningsTimestampStart?: number;
   earningsTimestampEnd?: number;
   epsForward?: number;
   epsCurrentYear?: number;
   epsTrailingTwelveMonths?: number;
+}
+
+type DividendFrequency = 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'irregular' | 'unknown';
+
+interface DividendHistoryEntry {
+  date: string;
+  amount: number;
+  paymentDate?: string | null;
+  source: 'api' | 'db';
+}
+
+interface DividendProfile {
+  frequency: DividendFrequency;
+  frequencyAr: string;
+  annualDividend: number | null;
+  yieldPct: number | null;
+  payoutRatioPct: number | null;
+  last12mDividend: number | null;
+  averageDividend: number | null;
+  historyCount: number;
+  nextExDate: string | null;
+  nextPaymentDate: string | null;
+}
+
+interface MarketDataSnapshotLite {
+  price: number | null;
+  volume: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  marketCap: number | null;
 }
 
 interface EarningsCalculation {
@@ -273,6 +316,185 @@ function formatNumber(value: number | null | undefined, digits = 2): string {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.replace(/,/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeRatioToPercent(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (Math.abs(value) <= 2) return value * 100;
+  return value;
+}
+
+function determineDividendFrequency(history: DividendHistoryEntry[]): DividendFrequency {
+  if (history.length < 2) return 'unknown';
+  const ascending = [...history].sort((a, b) => a.date.localeCompare(b.date));
+  const intervals: number[] = [];
+  for (let i = 1; i < ascending.length; i += 1) {
+    const prev = new Date(ascending[i - 1].date);
+    const current = new Date(ascending[i].date);
+    const diffDays = (current.getTime() - prev.getTime()) / (24 * 60 * 60 * 1000);
+    if (Number.isFinite(diffDays) && diffDays >= 10 && diffDays <= 430) {
+      intervals.push(diffDays);
+    }
+  }
+  if (intervals.length === 0) return 'unknown';
+  const sorted = intervals.sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (median <= 45) return 'monthly';
+  if (median <= 120) return 'quarterly';
+  if (median <= 220) return 'semiannual';
+  if (median <= 400) return 'annual';
+  return 'irregular';
+}
+
+function dividendFrequencyLabelAr(freq: DividendFrequency): string {
+  switch (freq) {
+    case 'monthly':
+      return 'شهري';
+    case 'quarterly':
+      return 'ربع سنوي';
+    case 'semiannual':
+      return 'نصف سنوي';
+    case 'annual':
+      return 'سنوي';
+    case 'irregular':
+      return 'غير منتظم';
+    default:
+      return 'غير متاح';
+  }
+}
+
+function expectedPaymentsPerYear(freq: DividendFrequency): number | null {
+  if (freq === 'monthly') return 12;
+  if (freq === 'quarterly') return 4;
+  if (freq === 'semiannual') return 2;
+  if (freq === 'annual') return 1;
+  return null;
+}
+
+function mergeDividendHistory(primary: DividendHistoryEntry[], fallback: DividendHistoryEntry[]): DividendHistoryEntry[] {
+  const map = new Map<string, DividendHistoryEntry>();
+  for (const item of fallback) {
+    const key = `${item.date}|${item.amount.toFixed(6)}`;
+    map.set(key, item);
+  }
+  for (const item of primary) {
+    const key = `${item.date}|${item.amount.toFixed(6)}`;
+    map.set(key, item);
+  }
+  return [...map.values()].sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function buildDividendProfile(history: DividendHistoryEntry[], quote?: QuoteLite): DividendProfile {
+  const frequency = determineDividendFrequency(history);
+  const frequencyAr = dividendFrequencyLabelAr(frequency);
+  const now = new Date();
+  const oneYearAgo = new Date(now);
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+  const oneYearAgoIso = oneYearAgo.toISOString().slice(0, 10);
+
+  const last12mRows = history.filter((row) => row.date >= oneYearAgoIso);
+  const last12mDividendRaw = last12mRows.reduce((sum, row) => sum + row.amount, 0);
+  const last12mDividend = Number.isFinite(last12mDividendRaw) && last12mDividendRaw > 0 ? last12mDividendRaw : null;
+
+  const avgRaw = history.length > 0 ? history.reduce((sum, row) => sum + row.amount, 0) / history.length : null;
+  const averageDividend = avgRaw != null && Number.isFinite(avgRaw) ? avgRaw : null;
+
+  const quoteAnnualRate = toFiniteNumber(quote?.dividendRate) ?? toFiniteNumber(quote?.trailingAnnualDividendRate);
+  let annualDividend = quoteAnnualRate;
+  if (annualDividend == null || !Number.isFinite(annualDividend) || annualDividend <= 0) {
+    annualDividend = last12mDividend;
+  }
+  if ((annualDividend == null || annualDividend <= 0) && history.length > 0) {
+    const latestAmount = history[0].amount;
+    const expected = expectedPaymentsPerYear(frequency);
+    if (expected != null && Number.isFinite(latestAmount)) {
+      annualDividend = latestAmount * expected;
+    }
+  }
+  if (annualDividend != null && !Number.isFinite(annualDividend)) {
+    annualDividend = null;
+  }
+
+  const marketPrice = toFiniteNumber(quote?.regularMarketPrice);
+  const quoteYield = normalizeRatioToPercent(
+    toFiniteNumber(quote?.dividendYield) ?? toFiniteNumber(quote?.trailingAnnualDividendYield)
+  );
+  const derivedYield = marketPrice && annualDividend ? (annualDividend / marketPrice) * 100 : null;
+  const yieldPct = quoteYield ?? derivedYield;
+
+  const payoutRatioPct = normalizeRatioToPercent(toFiniteNumber(quote?.payoutRatio));
+  const nextExDate = toIsoDate(quote?.exDividendDate);
+  const nextPaymentDate = toIsoDate(quote?.dividendDate);
+
+  return {
+    frequency,
+    frequencyAr,
+    annualDividend: annualDividend != null && Number.isFinite(annualDividend) ? annualDividend : null,
+    yieldPct: yieldPct != null && Number.isFinite(yieldPct) ? yieldPct : null,
+    payoutRatioPct: payoutRatioPct != null && Number.isFinite(payoutRatioPct) ? payoutRatioPct : null,
+    last12mDividend,
+    averageDividend,
+    historyCount: history.length,
+    nextExDate: nextExDate || null,
+    nextPaymentDate: nextPaymentDate || null,
+  };
+}
+
+function getDividendMarketMetrics(quote?: QuoteLite) {
+  const currentPrice = toFiniteNumber(quote?.regularMarketPrice);
+  const week52High = toFiniteNumber(quote?.fiftyTwoWeekHigh);
+  const week52Low = toFiniteNumber(quote?.fiftyTwoWeekLow);
+  const volume = toFiniteNumber(quote?.regularMarketVolume);
+  const avgVolume = toFiniteNumber(quote?.averageDailyVolume3Month) ?? toFiniteNumber(quote?.averageDailyVolume10Day);
+  const marketCap = toFiniteNumber(quote?.marketCap);
+  let pricePositionPct: number | null = null;
+
+  if (currentPrice != null && week52Low != null && week52High != null && week52High > week52Low) {
+    const raw = ((currentPrice - week52Low) / (week52High - week52Low)) * 100;
+    pricePositionPct = Math.max(0, Math.min(100, raw));
+  }
+
+  return {
+    currentPrice,
+    week52High,
+    week52Low,
+    volume,
+    avgVolume,
+    marketCap,
+    pricePositionPct,
+  };
+}
+
+function buildDividendSubtitle(
+  amount: number | null,
+  currencyCode: string,
+  profile: DividendProfile,
+  isUpcoming: boolean
+): string {
+  const parts: string[] = [];
+  if (amount != null && Number.isFinite(amount)) {
+    parts.push(`قيمة التوزيع ${formatNumber(amount, 4)} ${currencyCode}`);
+  } else if (isUpcoming) {
+    parts.push('توزيع متوقع من بيانات السوق');
+  } else {
+    parts.push('توزيع نقدي');
+  }
+  if (profile.frequency !== 'unknown') {
+    parts.push(`التكرار: ${profile.frequencyAr}`);
+  }
+  if (profile.yieldPct != null) {
+    parts.push(`عائد التوزيع: ${formatNumber(profile.yieldPct, 2)}%`);
+  }
+  return `${parts.join(' | ')}.`;
 }
 
 function normalizeSymbol(symbol: unknown): string {
@@ -1220,7 +1442,8 @@ function listingToEvent(health: ListingHealth): UnifiedEvent | null {
 
 async function fetchCorporateActionEvents(
   asset: NormalizedAsset,
-  resolvedCurrency: { code: string; symbol: string }
+  resolvedCurrency: { code: string; symbol: string },
+  quote?: QuoteLite
 ): Promise<UnifiedEvent[]> {
   const key = asset.symbol;
   const yahooSymbol = resolveYahooSymbol(asset) || asset.symbol;
@@ -1228,9 +1451,11 @@ async function fetchCorporateActionEvents(
   if (isFresh(cached)) return cached.value;
 
   const assetSources = normalizeAssetSources(asset.sources);
-  const [splitsData, divsData] = await Promise.all([
+  const [splitsData, divsData, dbDividendHistory, dbMarketData] = await Promise.all([
     fetchYahooJson(`/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=max&events=splits`),
     fetchYahooJson(`/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=5y&events=div`),
+    readDividendHistoryFromDb(asset),
+    readMarketDataSnapshotFromDb(asset.symbol),
   ]);
 
   const splitCurrency =
@@ -1243,6 +1468,26 @@ async function fetchCorporateActionEvents(
       .trim() || resolvedCurrency.code;
 
   const out: UnifiedEvent[] = [];
+  const quoteMetrics = getDividendMarketMetrics(quote);
+  const marketMetrics = {
+    currentPrice: quoteMetrics.currentPrice ?? dbMarketData?.price ?? null,
+    week52High: quoteMetrics.week52High ?? dbMarketData?.week52High ?? null,
+    week52Low: quoteMetrics.week52Low ?? dbMarketData?.week52Low ?? null,
+    volume: quoteMetrics.volume ?? dbMarketData?.volume ?? null,
+    avgVolume: quoteMetrics.avgVolume ?? null,
+    marketCap: quoteMetrics.marketCap ?? dbMarketData?.marketCap ?? null,
+    pricePositionPct: quoteMetrics.pricePositionPct,
+  };
+  if (
+    marketMetrics.pricePositionPct == null &&
+    marketMetrics.currentPrice != null &&
+    marketMetrics.week52Low != null &&
+    marketMetrics.week52High != null &&
+    marketMetrics.week52High > marketMetrics.week52Low
+  ) {
+    const raw = ((marketMetrics.currentPrice - marketMetrics.week52Low) / (marketMetrics.week52High - marketMetrics.week52Low)) * 100;
+    marketMetrics.pricePositionPct = Math.max(0, Math.min(100, raw));
+  }
   const splits = (splitsData as { chart?: { result?: Array<{ events?: { splits?: Record<string, Record<string, unknown>> } }> } })
     ?.chart?.result?.[0]?.events?.splits;
 
@@ -1295,20 +1540,39 @@ async function fetchCorporateActionEvents(
 
   const divs = (divsData as { chart?: { result?: Array<{ events?: { dividends?: Record<string, Record<string, unknown>> } }> } })
     ?.chart?.result?.[0]?.events?.dividends;
-
+  const apiDividendHistory: DividendHistoryEntry[] = [];
   if (divs) {
     for (const div of Object.values(divs)) {
       const date = toIsoDate(div.date);
-      if (!date) continue;
-      const amount = Number(div.amount);
+      const amount = toFiniteNumber(div.amount);
+      if (!date || amount == null) continue;
+      apiDividendHistory.push({
+        date,
+        amount,
+        paymentDate: null,
+        source: 'api',
+      });
+    }
+  }
+
+  const mergedDividendHistory = mergeDividendHistory(apiDividendHistory, dbDividendHistory);
+  const dividendProfile = buildDividendProfile(mergedDividendHistory, quote);
+
+  if (mergedDividendHistory.length > 0) {
+    for (const row of mergedDividendHistory.slice(0, 24)) {
+      const amount = row.amount;
       const links = buildSourceLinks(asset, 'dividend', [
         {
           label: 'Yahoo Dividends',
           url: `https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/history?p=${encodeURIComponent(yahooSymbol)}`,
         },
       ]);
+      const sourceLabel = row.source === 'db'
+        ? 'قاعدة بيانات التوزيعات بالمشروع + Market Sources'
+        : 'Yahoo Finance + Market Sources';
+
       out.push({
-        id: buildId(['ca', asset.symbol, 'dividend', date, amount.toFixed(6)]),
+        id: buildId(['ca', asset.symbol, 'dividend', row.date, amount.toFixed(6)]),
         symbol: asset.symbol,
         name: asset.name,
         assetType: asset.assetType,
@@ -1318,24 +1582,113 @@ async function fetchCorporateActionEvents(
         eventType: 'dividend',
         eventTypeAr: 'توزيع نقدي',
         titleAr: 'توزيعات نقدية',
-        subtitleAr: Number.isFinite(amount) ? `قيمة التوزيع ${formatNumber(amount, 4)} ${divCurrency}.` : 'توزيع نقدي.',
-        date,
+        subtitleAr: buildDividendSubtitle(amount, divCurrency, dividendProfile, false),
+        date: row.date,
         datePrecision: 'exact',
         status: 'announced',
         statusAr: statusAr('announced'),
-        source: 'Yahoo Finance + Market Sources',
+        source: sourceLabel,
         currency: divCurrency,
         currencySymbol: currencySymbol(divCurrency),
         importance: 72,
         url: selectPrimaryUrl(links, 'dividend'),
         sourceLinks: links,
         details: {
-          amount: Number.isFinite(amount) ? amount : null,
+          amount,
           currency: divCurrency,
+          currentPrice: marketMetrics.currentPrice,
+          week52High: marketMetrics.week52High,
+          week52Low: marketMetrics.week52Low,
+          pricePositionPct: marketMetrics.pricePositionPct,
+          volume: marketMetrics.volume,
+          avgVolume: marketMetrics.avgVolume,
+          marketCap: marketMetrics.marketCap,
+          dividendFrequency: dividendProfile.frequency,
+          dividendFrequencyAr: dividendProfile.frequencyAr,
+          dividendAnnual: dividendProfile.annualDividend,
+          dividendLast12m: dividendProfile.last12mDividend,
+          dividendAverage: dividendProfile.averageDividend,
+          dividendHistoryCount: dividendProfile.historyCount,
+          dividendYieldPct: dividendProfile.yieldPct,
+          payoutRatioPct: dividendProfile.payoutRatioPct,
+          nextExDate: dividendProfile.nextExDate,
+          nextPaymentDate: dividendProfile.nextPaymentDate,
+          cacheSource: row.source,
         },
       });
     }
   }
+
+  if (dividendProfile.nextExDate && dividendProfile.nextExDate >= todayIso()) {
+    const existsByDate = out.some(
+      (event) => event.eventType === 'dividend' && event.date === dividendProfile.nextExDate
+    );
+
+    if (!existsByDate) {
+      const paymentsPerYear = expectedPaymentsPerYear(dividendProfile.frequency);
+      const projectedAmount =
+        dividendProfile.annualDividend != null && paymentsPerYear != null && paymentsPerYear > 0
+          ? dividendProfile.annualDividend / paymentsPerYear
+          : mergedDividendHistory[0]?.amount ?? null;
+      const links = buildSourceLinks(asset, 'dividend', [
+        {
+          label: 'Yahoo Quote',
+          url: `https://finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}?p=${encodeURIComponent(yahooSymbol)}`,
+        },
+      ]);
+
+      out.push({
+        id: buildId(['ca', asset.symbol, 'dividend_upcoming', dividendProfile.nextExDate, projectedAmount ?? 'na']),
+        symbol: asset.symbol,
+        name: asset.name,
+        assetType: asset.assetType,
+        assetTypeAr: assetTypeAr(asset.assetType),
+        assetSources,
+        eventCategory: 'corporate_action',
+        eventType: 'dividend',
+        eventTypeAr: 'توزيع نقدي',
+        titleAr: 'توزيع نقدي قادم',
+        subtitleAr: buildDividendSubtitle(projectedAmount, divCurrency, dividendProfile, true),
+        date: dividendProfile.nextExDate,
+        datePrecision: 'exact',
+        status: 'upcoming',
+        statusAr: statusAr('upcoming'),
+        source: 'Yahoo Quote + Dividend Cache',
+        currency: divCurrency,
+        currencySymbol: currencySymbol(divCurrency),
+        importance: 85,
+        url: selectPrimaryUrl(links, 'dividend'),
+        sourceLinks: links,
+        details: {
+          amount: projectedAmount,
+          currency: divCurrency,
+          currentPrice: marketMetrics.currentPrice,
+          week52High: marketMetrics.week52High,
+          week52Low: marketMetrics.week52Low,
+          pricePositionPct: marketMetrics.pricePositionPct,
+          volume: marketMetrics.volume,
+          avgVolume: marketMetrics.avgVolume,
+          marketCap: marketMetrics.marketCap,
+          dividendFrequency: dividendProfile.frequency,
+          dividendFrequencyAr: dividendProfile.frequencyAr,
+          dividendAnnual: dividendProfile.annualDividend,
+          dividendLast12m: dividendProfile.last12mDividend,
+          dividendAverage: dividendProfile.averageDividend,
+          dividendHistoryCount: dividendProfile.historyCount,
+          dividendYieldPct: dividendProfile.yieldPct,
+          payoutRatioPct: dividendProfile.payoutRatioPct,
+          nextExDate: dividendProfile.nextExDate,
+          nextPaymentDate: dividendProfile.nextPaymentDate,
+          projectedFromQuote: true,
+        },
+      });
+    }
+  }
+
+  if (apiDividendHistory.length > 0) {
+    await persistDividendHistoryToDb(asset, divCurrency, apiDividendHistory);
+  }
+  await upsertMarketDataFromQuote(asset, quote);
 
   const hasSplitEvent = out.some((event) => event.eventType === 'split' || event.eventType === 'reverse_split');
   if (!hasSplitEvent && (asset.assetType === 'stock' || asset.assetType === 'fund')) {
@@ -1906,6 +2259,146 @@ function resolveQuoteForAsset(asset: NormalizedAsset, quotesMap: Map<string, Quo
     .find(Boolean);
 }
 
+async function readDividendHistoryFromDb(asset: NormalizedAsset): Promise<DividendHistoryEntry[]> {
+  try {
+    const rows = await db.dividend.findMany({
+      where: { symbol: asset.symbol },
+      orderBy: [{ exDividendDate: 'desc' }],
+      take: 32,
+      select: {
+        amount: true,
+        exDividendDate: true,
+        paymentDate: true,
+      },
+    });
+    const history: DividendHistoryEntry[] = [];
+    for (const row of rows) {
+      const amount = toFiniteNumber(row.amount);
+      const date = toIsoDateFromDate(row.exDividendDate);
+      if (amount == null || !date) continue;
+      const paymentDate = toIsoDateFromDate(row.paymentDate);
+      history.push({
+        date,
+        amount,
+        paymentDate: paymentDate || null,
+        source: 'db',
+      });
+    }
+    return history;
+  } catch {
+    return [];
+  }
+}
+
+async function readMarketDataSnapshotFromDb(symbol: string): Promise<MarketDataSnapshotLite | null> {
+  try {
+    const row = await db.marketData.findUnique({
+      where: { symbol },
+      select: {
+        price: true,
+        volume: true,
+        week52High: true,
+        week52Low: true,
+        marketCap: true,
+      },
+    });
+    if (!row) return null;
+    return {
+      price: toFiniteNumber(row.price),
+      volume: toFiniteNumber(row.volume),
+      week52High: toFiniteNumber(row.week52High),
+      week52Low: toFiniteNumber(row.week52Low),
+      marketCap: toFiniteNumber(row.marketCap),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function persistDividendHistoryToDb(
+  asset: NormalizedAsset,
+  currencyCode: string,
+  history: DividendHistoryEntry[]
+): Promise<void> {
+  const validRows = history
+    .filter((row) => row.source === 'api' && Number.isFinite(row.amount) && row.date)
+    .slice(0, 24);
+  if (validRows.length === 0) return;
+
+  try {
+    const existing = await db.dividend.findMany({
+      where: { symbol: asset.symbol },
+      select: {
+        exDividendDate: true,
+        amount: true,
+      },
+    });
+    const existingSet = new Set(
+      existing.map((row) => `${toIsoDateFromDate(row.exDividendDate)}|${Number(row.amount).toFixed(6)}`)
+    );
+    const currency = String(currencyCode || 'USD').toUpperCase();
+    const today = todayIso();
+
+    for (const row of validRows) {
+      const key = `${row.date}|${row.amount.toFixed(6)}`;
+      if (existingSet.has(key)) continue;
+      await db.dividend.create({
+        data: {
+          symbol: asset.symbol,
+          name: asset.name || asset.symbol,
+          amount: row.amount,
+          currency,
+          exDividendDate: new Date(`${row.date}T00:00:00.000Z`),
+          paymentDate: row.paymentDate ? new Date(`${row.paymentDate}T00:00:00.000Z`) : null,
+          status: row.date >= today ? 'pending' : 'paid',
+        },
+      });
+      existingSet.add(key);
+    }
+  } catch {
+    // DB cache is best-effort only; do not block core response.
+  }
+}
+
+async function upsertMarketDataFromQuote(asset: NormalizedAsset, quote?: QuoteLite): Promise<void> {
+  if (!quote) return;
+
+  const price = toFiniteNumber(quote.regularMarketPrice);
+  const volume = toFiniteNumber(quote.regularMarketVolume);
+  const week52High = toFiniteNumber(quote.fiftyTwoWeekHigh);
+  const week52Low = toFiniteNumber(quote.fiftyTwoWeekLow);
+  const marketCap = toFiniteNumber(quote.marketCap);
+  const hasAnyMetric = [price, volume, week52High, week52Low, marketCap].some((value) => value != null);
+  if (!hasAnyMetric) return;
+
+  try {
+    await db.marketData.upsert({
+      where: { symbol: asset.symbol },
+      update: {
+        name: asset.name || asset.symbol,
+        price: price ?? undefined,
+        volume: volume ?? undefined,
+        week52High: week52High ?? undefined,
+        week52Low: week52Low ?? undefined,
+        marketCap: marketCap ?? undefined,
+        lastUpdated: new Date(),
+      },
+      create: {
+        symbol: asset.symbol,
+        name: asset.name || asset.symbol,
+        price: price ?? undefined,
+        volume: volume ?? undefined,
+        week52High: week52High ?? undefined,
+        week52Low: week52Low ?? undefined,
+        marketCap: marketCap ?? undefined,
+        lastUpdated: new Date(),
+      },
+    });
+  } catch {
+    // Market cache write is non-blocking.
+  }
+}
+
 function toIsoDateFromDate(value: Date | null | undefined): string {
   if (!value) return '';
   const d = new Date(value);
@@ -2263,7 +2756,7 @@ async function buildEventsHub(request: NextRequest, body: unknown | null): Promi
     try {
       const quote = resolveQuoteForAsset(asset, quotesMap);
       const resolvedCurrency = resolveAssetCurrency(asset, quote);
-      return await fetchCorporateActionEvents(asset, resolvedCurrency);
+      return await fetchCorporateActionEvents(asset, resolvedCurrency, quote);
     } catch {
       warnings.push(`تعذر جلب الإجراءات المؤسسية للرمز ${asset.symbol}.`);
       return [];

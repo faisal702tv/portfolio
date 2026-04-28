@@ -25,6 +25,8 @@ import { resolveAssetMarket } from '@/lib/asset-market';
 import { convertCurrency } from '@/lib/helpers';
 import { useToast } from '@/hooks/use-toast';
 import { notifySuccess, notifyWarning, notifyInfo, notifyError } from '@/hooks/use-notifications';
+import { DIVIDEND_DATABASE, type DividendEntry } from '@/data/dividends-database';
+import { LOCAL_SYMBOL_DB } from '@/data/symbols-database';
 import {
   Plus,
   Search,
@@ -33,6 +35,10 @@ import {
   Edit2,
   Calendar,
   Building2,
+  Database,
+  RefreshCw,
+  Filter,
+  Globe,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -587,6 +593,255 @@ export default function DividendsPage() {
 
   const moneyInputStep = currencyDecimals(form.currency) >= 3 ? '0.001' : '0.01';
 
+  // ─── Local Dividend Database State ───
+  const [dbTab, setDbTab] = useState<'upcoming' | 'saudi' | 'usa' | 'funds' | 'portfolios' | 'watchlist'>('upcoming');
+  const [dbSearch, setDbSearch] = useState('');
+  const [dbLiveLoading, setDbLiveLoading] = useState(false);
+  const [dbLiveData, setDbLiveData] = useState<DividendEntry[]>([]);
+  const [portfolioDivData, setPortfolioDivData] = useState<DividendEntry[]>([]);
+  const [watchlistDivData, setWatchlistDivData] = useState<DividendEntry[]>([]);
+  const [portfolioDivLoading, setPortfolioDivLoading] = useState(false);
+  const [watchlistDivLoading, setWatchlistDivLoading] = useState(false);
+
+  const todayISO = new Date().toISOString().split('T')[0];
+
+  const KNOWN_ETF_SYMBOLS = useMemo(() => {
+    const etfSet = new Set<string>();
+    const sectors = ['صندوق', 'صندوق تقني', 'صندوق مالي', 'صندوق صحي', 'صندوق طاقة', 'صندوق صناعي', 'صندوق مرافق', 'صندوق استهلاكي', 'صندوق اتصالات', 'صندوق مواد', 'صندوق عقاري', 'صندوق معادن', 'بتكوين', 'رافعة', 'سلع', 'سندات'];
+    try {
+      for (const [sym, info] of Object.entries(LOCAL_SYMBOL_DB)) {
+        const sec = (info as Record<string, unknown>).s as string;
+        if (sec && sectors.includes(sec)) {
+          etfSet.add(sym);
+        }
+      }
+    } catch {}
+    return etfSet;
+  }, []);
+
+  const watchlistItems = useMemo(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem('watchlist_data');
+      if (!raw) return [];
+      const lists = JSON.parse(raw) as Array<{ items: Array<{ symbol: string; name: string | null; market: string | null; price: number | null }> }>;
+      return lists.flatMap((l) => l.items || []);
+    } catch { return []; }
+  }, []);
+
+  const portfolioSymbols = useMemo(() => {
+    const syms: Array<{ symbol: string; name: string; currency: string; qty: number; type: string }> = [];
+    for (const { snapshot: snap } of allSnapshots) {
+      for (const s of snap.stocks) {
+        syms.push({ symbol: s.symbol, name: s.name, currency: s.currency || 'SAR', qty: s.qty, type: 'stock' });
+      }
+      for (const f of snap.funds) {
+        syms.push({ symbol: f.symbol ?? f.name, name: f.name, currency: f.currency || 'USD', qty: f.units, type: 'fund' });
+      }
+      for (const b of snap.bonds) {
+        syms.push({ symbol: b.symbol, name: b.name, currency: b.currency || 'SAR', qty: b.qty, type: 'bond' });
+      }
+    }
+    return syms;
+  }, [allSnapshots]);
+
+  const dbFilteredEntries = useMemo(() => {
+    const allEntries = Object.values(DIVIDEND_DATABASE);
+
+    let base: DividendEntry[] = [];
+    if (dbTab === 'upcoming') {
+      base = allEntries.filter((e) => e.nextExDate && e.nextExDate >= todayISO);
+    } else if (dbTab === 'saudi') {
+      base = allEntries.filter((e) => e.symbol.endsWith('.SR'));
+    } else if (dbTab === 'usa') {
+      base = allEntries.filter((e) => !e.symbol.includes('.') && !KNOWN_ETF_SYMBOLS.has(e.symbol));
+    } else if (dbTab === 'funds') {
+      base = allEntries.filter((e) => KNOWN_ETF_SYMBOLS.has(e.symbol) && e.annualDiv > 0);
+    } else if (dbTab === 'portfolios') {
+      base = portfolioDivData;
+    } else if (dbTab === 'watchlist') {
+      base = watchlistDivData;
+    }
+
+    if (dbSearch.trim()) {
+      const q = dbSearch.toLowerCase();
+      base = base.filter(
+        (e) => e.symbol.toLowerCase().includes(q) || e.name.toLowerCase().includes(q)
+      );
+    }
+
+    return base;
+  }, [dbTab, dbSearch, todayISO, KNOWN_ETF_SYMBOLS, portfolioDivData, watchlistDivData]);
+
+  const dbLiveFiltered = useMemo(() => {
+    if (dbSearch.trim()) {
+      const q = dbSearch.toLowerCase();
+      return dbLiveData.filter(
+        (e) => e.symbol.toLowerCase().includes(q) || e.name.toLowerCase().includes(q)
+      );
+    }
+    return dbLiveData;
+  }, [dbLiveData, dbSearch]);
+
+  const handleDbRefresh = async () => {
+    setDbLiveLoading(true);
+    try {
+      const symbols = dbFilteredEntries.map((e) => e.symbol).slice(0, 20).join(',');
+      const res = await fetch(`/api/dividends?mode=live&symbols=${encodeURIComponent(symbols)}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data)) {
+        setDbLiveData(data.data);
+        toast({ title: 'تم التحديث', description: `تم جلب بيانات ${data.data.length} رمز مباشرة` });
+      }
+    } catch {
+      toast({ title: 'خطأ', description: 'فشل جلب البيانات المباشرة', variant: 'destructive' });
+    } finally {
+      setDbLiveLoading(false);
+    }
+  };
+
+  const fetchPortfolioDividends = useCallback(async () => {
+    if (portfolioSymbols.length === 0) return;
+    setPortfolioDivLoading(true);
+    try {
+      const syms = [...new Set(portfolioSymbols.map((p) => p.symbol))];
+      const allResults: DividendEntry[] = [];
+      for (let i = 0; i < syms.length; i += 30) {
+        const batch = syms.slice(i, i + 30);
+        const res = await fetch(`/api/dividends?mode=live&symbols=${encodeURIComponent(batch.join(','))}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.data)) allResults.push(...data.data);
+      }
+      const fetched = new Map(allResults.map((d: DividendEntry) => [d.symbol, d]));
+      const merged: DividendEntry[] = [];
+      for (const p of portfolioSymbols) {
+        const live = fetched.get(p.symbol);
+        if (live) {
+          merged.push(live);
+        } else {
+          const local = DIVIDEND_DATABASE[p.symbol] || DIVIDEND_DATABASE[p.symbol.replace('.SR', '') as string];
+          if (local) {
+            merged.push(local);
+          } else {
+            merged.push({
+              symbol: p.symbol, name: p.name, currency: p.currency, annualDiv: 0, yieldPct: 0,
+              frequency: 'none', lastExDate: '', nextExDate: '', lastDivPerShare: 0,
+              recentDividends: [], source: 'المحفظة',
+            });
+          }
+        }
+      }
+      const unique = new Map<string, DividendEntry>();
+      for (const e of merged) unique.set(e.symbol, e);
+      setPortfolioDivData(Array.from(unique.values()));
+    } catch {} finally {
+      setPortfolioDivLoading(false);
+    }
+  }, [portfolioSymbols]);
+
+  const fetchWatchlistDividends = useCallback(async () => {
+    if (watchlistItems.length === 0) return;
+    setWatchlistDivLoading(true);
+    try {
+      const syms = [...new Set(watchlistItems.map((w) => w.symbol))];
+      const allResults: DividendEntry[] = [];
+      for (let i = 0; i < syms.length; i += 30) {
+        const batch = syms.slice(i, i + 30);
+        const res = await fetch(`/api/dividends?mode=live&symbols=${encodeURIComponent(batch.join(','))}`, { cache: 'no-store' });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.data)) allResults.push(...data.data);
+      }
+      const fetched = new Map(allResults.map((d: DividendEntry) => [d.symbol, d]));
+      const merged: DividendEntry[] = [];
+      for (const w of watchlistItems) {
+        const live = fetched.get(w.symbol);
+        if (live) {
+          merged.push(live);
+        } else {
+          const local = DIVIDEND_DATABASE[w.symbol];
+          if (local) {
+            merged.push(local);
+          } else {
+            merged.push({
+              symbol: w.symbol, name: w.name || w.symbol, currency: 'USD', annualDiv: 0, yieldPct: 0,
+              frequency: 'none', lastExDate: '', nextExDate: '', lastDivPerShare: 0,
+              recentDividends: [], source: 'قائمة المتابعة',
+            });
+          }
+        }
+      }
+      const unique = new Map<string, DividendEntry>();
+      for (const e of merged) unique.set(e.symbol, e);
+      setWatchlistDivData(Array.from(unique.values()));
+    } catch {} finally {
+      setWatchlistDivLoading(false);
+    }
+  }, [watchlistItems]);
+
+  useEffect(() => {
+    if (dbTab === 'portfolios' && portfolioDivData.length === 0 && portfolioSymbols.length > 0) {
+      void fetchPortfolioDividends();
+    }
+  }, [dbTab, portfolioDivData.length, portfolioSymbols.length, fetchPortfolioDividends]);
+
+  useEffect(() => {
+    if (dbTab === 'watchlist' && watchlistDivData.length === 0 && watchlistItems.length > 0) {
+      void fetchWatchlistDividends();
+    }
+  }, [dbTab, watchlistDivData.length, watchlistItems.length, fetchWatchlistDividends]);
+
+  const dbTabLabel: Record<string, string> = {
+    upcoming: `التوزيعات القادمة (${Object.values(DIVIDEND_DATABASE).filter((e) => e.nextExDate && e.nextExDate >= new Date().toISOString().split('T')[0]).length})`,
+    saudi: `🇸🇦 السوق السعودي (${Object.values(DIVIDEND_DATABASE).filter((e) => e.symbol.endsWith('.SR')).length})`,
+    usa: `🇺🇸 السوق الأمريكي (${Object.values(DIVIDEND_DATABASE).filter((e) => !e.symbol.includes('.')).length})`,
+    funds: `🏦 الصناديق الموزعة`,
+    portfolios: `💼 المحافظ (${portfolioSymbols.length})`,
+    watchlist: `📋 قائمة المتابعة (${watchlistItems.length})`,
+  };
+
+  const freqArabic: Record<string, string> = {
+    quarterly: 'ربع سنوي',
+    'semi-annual': 'نصف سنوي',
+    annual: 'سنوي',
+    monthly: 'شهري',
+    none: 'لا يوزع',
+  };
+
+  const getDivPerPeriod = (entry: DividendEntry): number => {
+    if (entry.annualDiv <= 0) return 0;
+    switch (entry.frequency) {
+      case 'monthly': return entry.annualDiv / 12;
+      case 'quarterly': return entry.annualDiv / 4;
+      case 'semi-annual': return entry.annualDiv / 2;
+      case 'annual': return entry.annualDiv;
+      default: return entry.lastDivPerShare;
+    }
+  };
+
+  const addDividendFromDb = (entry: DividendEntry) => {
+    const existing = dividends.find((d) => d.symbol === entry.symbol);
+    if (existing) {
+      toast({ title: 'موجود مسبقاً', description: `${entry.symbol} موجود في التوزيعات` });
+      return;
+    }
+    const newRecord: DividendRecord = {
+      id: crypto.randomUUID(),
+      symbol: entry.symbol,
+      name: entry.name,
+      assetType: entry.symbol.endsWith('.SR') ? 'stock' : entry.frequency === 'monthly' ? 'fund' : 'stock',
+      currency: entry.currency,
+      dividendPerUnit: entry.lastDivPerShare,
+      totalDividend: 0,
+      yieldPct: entry.yieldPct,
+      exDate: entry.nextExDate || entry.lastExDate,
+      payDate: entry.nextExDate || entry.lastExDate,
+      status: 'upcoming',
+      notes: `توزيع ${freqArabic[entry.frequency] || entry.frequency} - تلقائي من قاعدة البيانات`,
+    };
+    persist([newRecord, ...dividends]);
+    toast({ title: 'تمت الإضافة', description: `تم إضافة ${entry.symbol}` });
+  };
+
   const avgYield = useMemo(() => {
     const yielding = dividends.filter((d) => d.yieldPct > 0);
     if (yielding.length === 0) return 0;
@@ -686,6 +941,191 @@ export default function DividendsPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* ---- Local Dividend Database ---- */}
+          <Card className="border-blue-200 dark:border-blue-800">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Database className="h-5 w-5 text-blue-500" />
+                  قاعدة بيانات التوزيعات ({Object.keys(DIVIDEND_DATABASE).length} رمز)
+                  <Badge variant="secondary" className="text-[10px]">محلي</Badge>
+                </CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (dbTab === 'portfolios') void fetchPortfolioDividends();
+                    else if (dbTab === 'watchlist') void fetchWatchlistDividends();
+                    else void handleDbRefresh();
+                  }}
+                  disabled={dbLiveLoading || portfolioDivLoading || watchlistDivLoading}
+                  className="gap-1"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${dbLiveLoading || portfolioDivLoading || watchlistDivLoading ? 'animate-spin' : ''}`} />
+                  تحديث مباشر
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* DB Tabs */}
+              <div className="flex flex-wrap gap-2">
+                {(['upcoming', 'saudi', 'usa', 'funds', 'portfolios', 'watchlist'] as const).map((tab) => (
+                  <Button
+                    key={tab}
+                    variant={dbTab === tab ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setDbTab(tab)}
+                    className="text-xs"
+                  >
+                    {dbTabLabel[tab]}
+                  </Button>
+                ))}
+              </div>
+
+              {/* DB Search */}
+              <div className="relative max-w-sm">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="بحث في قاعدة البيانات..."
+                  value={dbSearch}
+                  onChange={(e) => setDbSearch(e.target.value)}
+                  className="pr-9"
+                />
+              </div>
+
+              {/* DB Table */}
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>الرمز</TableHead>
+                      <TableHead>الاسم</TableHead>
+                      <TableHead className="text-left">النوع</TableHead>
+                      <TableHead className="text-left">العملة</TableHead>
+                      <TableHead className="text-left">قيمة/فترة</TableHead>
+                      <TableHead className="text-left">التوزيع السنوي</TableHead>
+                      <TableHead className="text-left">العائد %</TableHead>
+                      <TableHead className="text-left">التكرار</TableHead>
+                      <TableHead className="text-left">آخر توزيع</TableHead>
+                      <TableHead className="text-left">القادم</TableHead>
+                      <TableHead className="text-left">إجراء</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dbFilteredEntries.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={11} className="text-center text-muted-foreground py-6">
+                          {dbTab === 'portfolios' ? 'لا توجد محافظ - أضف أسهماً في صفحة الأسهم أو الصناديق' : dbTab === 'watchlist' ? 'لا توجد عناصر - أضف أسهماً في صفحة قائمة المتابعة' : 'لا توجد بيانات'}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      dbFilteredEntries.slice(0, 300).map((entry) => {
+                        const periodAmount = getDivPerPeriod(entry);
+                        return (
+                          <TableRow key={entry.symbol}>
+                            <TableCell className="font-medium">{entry.symbol}</TableCell>
+                            <TableCell className="max-w-[200px] truncate">{entry.name}</TableCell>
+                            <TableCell className="text-left">
+                              <Badge variant={KNOWN_ETF_SYMBOLS.has(entry.symbol) ? 'secondary' : 'outline'} className="text-[9px]">
+                                {KNOWN_ETF_SYMBOLS.has(entry.symbol) ? 'صندوق' : 'سهم'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-left">{entry.currency}</TableCell>
+                            <TableCell className="text-left">
+                              {periodAmount > 0 ? (
+                                <span className="font-semibold text-green-600 dark:text-green-400">{periodAmount.toFixed(4)}</span>
+                              ) : '-'}
+                            </TableCell>
+                            <TableCell className="text-left">{entry.annualDiv > 0 ? entry.annualDiv : '-'}</TableCell>
+                            <TableCell className="text-left">
+                              {entry.yieldPct > 0 ? (
+                                <Badge variant={entry.yieldPct >= 5 ? 'default' : entry.yieldPct >= 2 ? 'secondary' : 'outline'} className="text-[10px]">
+                                  {fmtNum(entry.yieldPct)}%
+                                </Badge>
+                              ) : '-'}
+                            </TableCell>
+                            <TableCell className="text-left text-xs">{freqArabic[entry.frequency] || '-'}</TableCell>
+                            <TableCell className="text-left text-xs">{entry.lastExDate || '-'}</TableCell>
+                            <TableCell className="text-left text-xs">
+                              {entry.nextExDate ? (
+                                <Badge variant={entry.nextExDate >= todayISO ? 'secondary' : 'outline'} className="text-[10px]">
+                                  {entry.nextExDate}
+                                </Badge>
+                              ) : '-'}
+                            </TableCell>
+                            <TableCell className="text-left">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => addDividendFromDb(entry)}
+                                className="text-xs gap-1"
+                              >
+                                <Plus className="h-3 w-3" />
+                                إضافة
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* Live Data Section */}
+              {dbLiveData.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="h-4 w-4 text-blue-500" />
+                    <p className="text-sm font-medium">بيانات مباشرة ({dbLiveData.length} رمز)</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>الرمز</TableHead>
+                          <TableHead>الاسم</TableHead>
+                          <TableHead className="text-left">العملة</TableHead>
+                          <TableHead className="text-left">التوزيع السنوي</TableHead>
+                          <TableHead className="text-left">العائد %</TableHead>
+                          <TableHead className="text-left">التكرار</TableHead>
+                          <TableHead className="text-left">القادم</TableHead>
+                          <TableHead className="text-left">إجراء</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {dbLiveFiltered.map((entry) => (
+                          <TableRow key={`live-${entry.symbol}`}>
+                            <TableCell className="font-medium">{entry.symbol}</TableCell>
+                            <TableCell className="max-w-[200px] truncate">{entry.name}</TableCell>
+                            <TableCell className="text-left">{entry.currency}</TableCell>
+                            <TableCell className="text-left">{entry.annualDiv > 0 ? entry.annualDiv : '-'}</TableCell>
+                            <TableCell className="text-left">
+                              {entry.yieldPct > 0 ? `${fmtNum(entry.yieldPct)}%` : '-'}
+                            </TableCell>
+                            <TableCell className="text-left text-xs">{freqArabic[entry.frequency] || '-'}</TableCell>
+                            <TableCell className="text-left text-xs">{entry.nextExDate || '-'}</TableCell>
+                            <TableCell className="text-left">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => addDividendFromDb(entry)}
+                                className="text-xs gap-1"
+                              >
+                                <Plus className="h-3 w-3" />
+                                إضافة
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader className="pb-2">

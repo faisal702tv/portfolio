@@ -369,10 +369,17 @@ export default function TechnicalAnalysisPage() {
 
   /* ─── AI Analysis ─── */
   const requestAIAnalysis = async () => {
-    if (!indicators || !selectedSymbol) return;
+    if (!selectedSymbol) {
+      notifyError('خطأ', 'اختر رمزاً أولاً');
+      return;
+    }
     setAiLoading(true);
+    setAiAnalysis('');
+    setActiveTab('ai');
     try {
-      const prompt = `حلل فنياً الرمز ${selectedSymbol} بناءً على المؤشرات التالية:
+      let prompt: string;
+      if (indicators) {
+        prompt = `حلل فنياً الرمز ${selectedSymbol} بناءً على المؤشرات التالية:
 - السعر الحالي: ${indicators.currentPrice}
 - RSI(14): ${indicators.currentRSI?.toFixed(1)} (${indicators.rsiSignal})
 - MACD: ${indicators.currentMACD?.toFixed(3)} (${indicators.macdSignal})
@@ -396,6 +403,14 @@ export default function TechnicalAnalysisPage() {
 7. المخاطر والتحذيرات
 
 أجب بالعربية بشكل مختصر ومنظم.`;
+      } else {
+        prompt = `حلل فنياً الرمز ${selectedSymbol}.
+قدّم تحليلاً عاماً يتضمن:
+1. نظرة عامة على السهم وأدائه
+2. أهم مستويات الدعم والمقاومة المحتملة
+3. التوصية العامة
+أجب بالعربية.`;
+      }
 
       const apiKey = getApiKey(selectedProvider);
       const systemPrompt = 'أنت محلل فني محترف بخبرة 15 عاماً في أسواق المال. تستخدم التحليل الفني الكلاسيكي والحديث. قدّم تحليلاً عملياً مع مستويات دخول وخروج محددة.';
@@ -646,7 +661,7 @@ export default function TechnicalAnalysisPage() {
                         size="sm"
                         className="gap-1"
                         onClick={requestAIAnalysis}
-                        disabled={aiLoading}
+                        disabled={aiLoading || !selectedSymbol}
                       >
                         {aiLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Brain className="h-3 w-3" />}
                         تحليل AI
@@ -905,11 +920,17 @@ export default function TechnicalAnalysisPage() {
                       <CardContent className="py-12 text-center text-muted-foreground">
                         <Brain className="h-12 w-12 mx-auto mb-3 opacity-40" />
                         <p className="font-semibold mb-2">تحليل AI الفني</p>
-                        <p className="text-sm mb-4">اضغط على زر &quot;تحليل AI&quot; للحصول على تفسير شامل للمؤشرات الفنية مع توصيات</p>
-                        <Button onClick={requestAIAnalysis} disabled={aiLoading}>
-                          <Brain className="h-4 w-4 ml-2" />
-                          بدء التحليل
-                        </Button>
+                        {!selectedSymbol ? (
+                          <p className="text-sm mb-4">اختر رمزاً من القائمة أعلاه أولاً</p>
+                        ) : (
+                          <>
+                            <p className="text-sm mb-4">اضغط للحصول على تحليل بالذكاء الاصطناعي {indicators ? 'شامل للمؤشرات الفنية' : 'عام للرمز'}</p>
+                            <Button onClick={requestAIAnalysis} disabled={!selectedSymbol}>
+                              <Brain className="h-4 w-4 ml-2" />
+                              بدء التحليل
+                            </Button>
+                          </>
+                        )}
                       </CardContent>
                     </Card>
                   )}

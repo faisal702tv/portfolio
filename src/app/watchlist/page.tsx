@@ -45,6 +45,7 @@ interface WatchlistItem {
   name: string | null;
   market: string | null;
   marketFlag: string | null;
+  marketCap?: number | null;
   price: number | null;
   change: number | null;
   changePct: number | null;
@@ -218,6 +219,50 @@ async function fetchShariaSnapshot(symbol: string): Promise<Partial<WatchlistIte
   return null;
 }
 
+function parseMarketCapRaw(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const suffix = raw.slice(-1).toUpperCase();
+  const hasSuffix = ['T', 'B', 'M', 'K'].includes(suffix);
+  const baseText = hasSuffix ? raw.slice(0, -1) : raw;
+  const cleaned = baseText.replace(/[,\s]/g, '');
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+
+  if (suffix === 'T') return parsed * 1e12;
+  if (suffix === 'B') return parsed * 1e9;
+  if (suffix === 'M') return parsed * 1e6;
+  if (suffix === 'K') return parsed * 1e3;
+
+  // In our purification dataset many values are stored in "billions" units (e.g. 17.172).
+  if (parsed > 0 && parsed < 1_000_000) return parsed * 1e9;
+  return parsed;
+}
+
+async function fetchPurificationMarketCap(symbol: string, exchange?: string | null): Promise<number | null> {
+  try {
+    const params = new URLSearchParams({
+      symbol,
+      assetType: 'stock',
+    });
+    if (exchange) params.set('exchange', exchange);
+
+    const res = await fetch(`/api/purification?${params.toString()}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json?.success || !json?.found) return null;
+    return parseMarketCapRaw(json.marketCap);
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Backend Live price fetching
 // ---------------------------------------------------------------------------
@@ -331,6 +376,7 @@ export default function WatchlistPage() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const shariaAttemptedSymbolsRef = useRef<Set<string>>(new Set());
+  const marketCapAttemptedSymbolsRef = useRef<Set<string>>(new Set());
 
   const [newStock, setNewStock] = useState({
     symbol: '', name: '', market: '', marketFlag: '', exchange: '', targetPrice: '', alertAbove: '', alertBelow: '', notes: '',
@@ -409,6 +455,11 @@ export default function WatchlistPage() {
             price: q.price,
             change: q.change,
             changePct: q.changePct,
+            marketCap:
+              q.marketCap ??
+              ((typeof q.sharesOutstanding === 'number' && typeof q.price === 'number' && q.sharesOutstanding > 0 && q.price > 0)
+                ? q.sharesOutstanding * q.price
+                : item.marketCap ?? null),
             high52w: q.high52w ?? item.high52w,
             low52w: q.low52w ?? item.low52w,
             volume: q.volume ?? item.volume,
@@ -441,6 +492,58 @@ export default function WatchlistPage() {
   useEffect(() => {
     persistWatchlistOrder(watchlists.map(w => w.id));
   }, [watchlists]);
+
+  // Fill missing market cap from purification dataset as a fallback
+  useEffect(() => {
+    const pending = Array.from(new Set(
+      watchlists
+        .flatMap((list) => list.items)
+        .filter((item) => !item.marketCap || item.marketCap <= 0)
+        .map((item) => normalizeSymbol(item.symbol))
+        .filter((symbol) => symbol.length > 0 && !marketCapAttemptedSymbolsRef.current.has(symbol))
+    ));
+
+    if (pending.length === 0) return;
+    pending.forEach((symbol) => marketCapAttemptedSymbolsRef.current.add(symbol));
+
+    let canceled = false;
+
+    const hydrateMarketCaps = async () => {
+      const exchangeBySymbol = new Map<string, string | null>();
+      for (const list of watchlists) {
+        for (const item of list.items) {
+          const key = normalizeSymbol(item.symbol);
+          if (!exchangeBySymbol.has(key)) exchangeBySymbol.set(key, item.market || null);
+        }
+      }
+
+      const lookups = await Promise.all(
+        pending.map(async (symbol) => {
+          const marketCap = await fetchPurificationMarketCap(symbol, exchangeBySymbol.get(symbol));
+          return { symbol, marketCap };
+        })
+      );
+      if (canceled) return;
+
+      const patchBySymbol = new Map<string, number>();
+      for (const entry of lookups) {
+        if (entry.marketCap && entry.marketCap > 0) patchBySymbol.set(entry.symbol, entry.marketCap);
+      }
+      if (patchBySymbol.size === 0) return;
+
+      setWatchlists((prev) => prev.map((list) => ({
+        ...list,
+        items: list.items.map((item) => {
+          if (item.marketCap && item.marketCap > 0) return item;
+          const cap = patchBySymbol.get(normalizeSymbol(item.symbol));
+          return cap ? { ...item, marketCap: cap } : item;
+        }),
+      })));
+    };
+
+    void hydrateMarketCaps();
+    return () => { canceled = true; };
+  }, [watchlists, setWatchlists]);
 
   // Fill missing sharia criteria for current watchlist items (existing local data migration).
   useEffect(() => {
@@ -637,6 +740,16 @@ export default function WatchlistPage() {
 
   const stockMarkets = markets.filter(m => m.type === 'stock');
 
+  const formatMarketCapCompact = (value?: number | null) => {
+    if (value == null || !Number.isFinite(value) || value <= 0) return null;
+    const abs = Math.abs(value);
+    if (abs >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+    return value.toFixed(0);
+  };
+
   // 52w position bar
   const pos52w = (price: number | null, high: number | null | undefined, low: number | null | undefined) => {
     if (!price || !high || !low || high <= low) return null;
@@ -752,6 +865,7 @@ export default function WatchlistPage() {
                 const pctPos = pos52w(item.price, item.high52w, item.low52w);
                 const isUp = (item.changePct || 0) >= 0;
                 const atTarget = item.targetPrice && item.price && item.price >= item.targetPrice;
+                const marketCapLabel = formatMarketCapCompact(item.marketCap);
                 const hasShariaData = Boolean(
                   item.shariaStatus || item.shariaBilad || item.shariaRajhi || item.shariaMaqasid || item.shariaZero
                 );
@@ -764,7 +878,13 @@ export default function WatchlistPage() {
                         <div className="flex items-center gap-3 min-w-[180px]">
                           <span className="text-xl">{item.marketFlag || inferFlagFromExchange(item.market, item.symbol) || '📈'}</span>
                           <div>
-                            <p className="font-bold text-base">{item.symbol}</p>
+                            <p className="font-bold text-base flex items-center gap-2 whitespace-nowrap">
+                              <span>{item.symbol}</span>
+                              <span className="text-muted-foreground">|</span>
+                              <span className="text-xs font-semibold text-primary/90">
+                                القيمة السوقية: {marketCapLabel ?? 'غير متاح'}
+                              </span>
+                            </p>
                             <p className="text-xs text-muted-foreground line-clamp-1">{item.name}</p>
                           </div>
                         </div>

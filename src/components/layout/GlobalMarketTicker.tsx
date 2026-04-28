@@ -195,8 +195,8 @@ export function GlobalMarketTicker() {
   const refresh = useCallback(async () => {
     try {
       const [tickerRes, cryptoRes] = await Promise.allSettled([
-        fetch('/api/ticker', { signal: AbortSignal.timeout(12000) }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/real-prices?type=crypto', { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/market-hub?domain=indices', { signal: AbortSignal.timeout(12000), cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/market-hub?domain=crypto', { signal: AbortSignal.timeout(8000), cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       if (!mountedRef.current) return;

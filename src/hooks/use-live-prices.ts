@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { MarketDomain, MarketQuote } from '@/lib/market-hub';
 
 interface LivePrice {
   price: number;
@@ -15,6 +16,11 @@ interface LivePrice {
   averageVolume10Day?: number;
   shortRatio?: number;
   shortPercentOfFloat?: number;
+  sharesShort?: number;
+  sharesOutstanding?: number;
+  floatShares?: number;
+  shortDataSource?: string;
+  shortDataChecked?: boolean;
   marketCap?: number;
   source: string;
   lastUpdate: number;
@@ -22,10 +28,10 @@ interface LivePrice {
 
 interface PricesResponse {
   success: boolean;
-  cached: boolean;
-  timestamp: number;
-  count: number;
-  data: Record<string, LivePrice>;
+  timestamp?: number;
+  count?: number;
+  data?: Record<string, MarketQuote>;
+  error?: string;
 }
 
 interface UseLivePricesOptions {
@@ -53,30 +59,83 @@ export function useLivePrices(options: UseLivePricesOptions = {}): UseLivePrices
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  const resolveDomain = useCallback((value: UseLivePricesOptions['category']): MarketDomain => {
+    switch (value) {
+      case 'crypto':
+        return 'crypto';
+      case 'forex':
+        return 'forex';
+      case 'metals':
+        return 'metals';
+      case 'indices':
+        return 'indices';
+      case 'energy':
+        return 'energy';
+      case 'saudi':
+        return 'saudi';
+      case 'all':
+      default:
+        // نطاق stocks موصول الآن بـ /api/prices ويعيد تغطية واسعة للأسهم/العملات/السلع/الصناديق.
+        return 'stocks';
+    }
+  }, []);
+
+  const toLivePriceMap = useCallback((input: Record<string, MarketQuote> | undefined, fallbackTs: number): Record<string, LivePrice> => {
+    if (!input) return {};
+    const out: Record<string, LivePrice> = {};
+    for (const [symbol, quote] of Object.entries(input)) {
+      if (!quote || typeof quote.price !== 'number' || !Number.isFinite(quote.price)) continue;
+      out[symbol] = {
+        price: quote.price,
+        change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+        changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+        high: quote.high ?? undefined,
+        low: quote.low ?? undefined,
+        high52w: quote.high52w ?? null,
+        low52w: quote.low52w ?? null,
+        volume: quote.volume ?? undefined,
+        averageVolume: quote.averageVolume ?? undefined,
+        averageVolume10Day: quote.averageVolume10Day ?? undefined,
+        shortRatio: quote.shortRatio ?? undefined,
+        shortPercentOfFloat: quote.shortPercentOfFloat ?? undefined,
+        sharesShort: quote.sharesShort ?? undefined,
+        sharesOutstanding: quote.sharesOutstanding ?? undefined,
+        floatShares: quote.floatShares ?? undefined,
+        shortDataSource: quote.shortDataSource ?? undefined,
+        marketCap: quote.marketCap ?? undefined,
+        source: quote.source || 'market-hub',
+        lastUpdate: quote.lastUpdate || fallbackTs,
+      };
+    }
+    return out;
+  }, []);
   
   const fetchPrices = useCallback(async () => {
     try {
-      let url = `/api/prices?category=${category}`;
+      const domain = resolveDomain(category);
+      const params = new URLSearchParams({ domain });
       if (symbols && symbols.length > 0) {
-        url += `&symbols=${symbols.join(',')}`;
+        params.set('symbols', symbols.map((s) => s.trim().toUpperCase()).filter(Boolean).join(','));
       }
-      
-      const response = await fetch(url);
+
+      const response = await fetch(`/api/market-hub?${params.toString()}`, { cache: 'no-store' });
       const data: PricesResponse = await response.json();
       
-      if (data.success) {
-        setPrices(data.data);
-        setLastUpdate(new Date(data.timestamp));
+      if (data.success && data.data) {
+        const ts = data.timestamp || Date.now();
+        setPrices(toLivePriceMap(data.data, ts));
+        setLastUpdate(new Date(ts));
         setError(null);
       } else {
-        setError('Failed to fetch prices');
+        setError(data.error || 'Failed to fetch prices');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
-  }, [category, symbols]);
+  }, [category, symbols, resolveDomain, toLivePriceMap]);
   
   useEffect(() => {
     fetchPrices();
@@ -115,7 +174,7 @@ export function useLivePrice(symbol: string): {
 }
 
 // Format price for display
-export function formatPrice(price: number, symbol?: string): string {
+export function formatPrice(price: number, _symbol?: string): string {
   if (price >= 1000000000) {
     return `${(price / 1000000000).toFixed(2)}B`;
   }

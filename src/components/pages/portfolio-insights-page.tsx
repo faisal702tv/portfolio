@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -70,6 +70,7 @@ import {
   Package,
   Download,
   Search,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatNumber, formatPercent, convertCurrency } from '@/lib/helpers';
@@ -96,106 +97,38 @@ import {
 
 // بيانات تحليل المحفظة الافتراضية
 const initialPortfolioAnalysis = {
-  overallScore: 78,
+  overallScore: 0,
   lastUpdated: new Date(),
-  recommendations: [
-    {
-      id: 1,
-      type: 'action',
-      priority: 'high',
-      title: 'تقليل التعرض لقطاع الطاقة',
-      description: 'قطاع الطاقة يمثل 25% من المحفظة مع أداء سلبي. يُنصح بتقليل الوزن إلى 15%',
-      impact: 'تحسين العائد المتوقع بنسبة 2-3%',
-      action: 'بيع 50 سهم من أرامكو',
-    },
-    {
-      id: 2,
-      type: 'opportunity',
-      priority: 'medium',
-      title: 'إضافة صندوق عقاري',
-      description: 'المحفظة تفتقر للتعرض لقطاع العقارات الذي يوفر عوائد مستقرة',
-      impact: 'تنويع المحفظة وتقليل المخاطر',
-      action: 'شراء صندوق الرياض العقاري',
-    },
-    {
-      id: 3,
-      type: 'risk',
-      priority: 'high',
-      title: 'تركز في البنوك',
-      description: 'قطاع البنوك يمثل 35% من المحفظة مما يزيد المخاطر القطاعية',
-      impact: 'مخاطر تنظيمية واقتصادية',
-      action: 'تنويع داخل القطاع أو تقليل الوزن',
-    },
-    {
-      id: 4,
-      type: 'optimization',
-      priority: 'low',
-      title: 'تحسين التوزيعات',
-      description: 'عائد التوزيعات الحالي 2.8% يمكن رفعه إلى 4% بإضافة أسهم بعوائد أعلى',
-      impact: 'زيادة الدخل السنوي بـ 600 ريال',
-      action: 'إضافة أسهم بعوائد توزيعات أعلى',
-    },
-  ],
+  recommendations: [],
   riskAnalysis: {
-    overallRisk: 'متوسط',
-    riskScore: 65,
-    diversification: 72,
-    concentration: 58,
-    volatility: 45,
-    sharpeRatio: 1.25,
-    maxDrawdown: -12.5,
-    beta: 0.85,
-    factors: [
-      { name: 'مخاطر السوق', level: 65, description: 'تعرض معتدل لتقلبات السوق' },
-      { name: 'مخاطر القطاع', level: 72, description: 'تركز في بعض القطاعات' },
-      { name: 'مخاطر السيولة', level: 25, description: 'سيولة عالية' },
-      { name: 'مخاطر العملة', level: 15, description: 'تعرض منخفض' },
-    ],
+    overallRisk: 'جاري الحساب...',
+    riskScore: 0,
+    diversification: 0,
+    concentration: 0,
+    volatility: 0,
+    sharpeRatio: 0,
+    maxDrawdown: 0,
+    beta: 0,
+    factors: [],
   },
   performance: {
     expected: {
-      bullish: { prob: 45, return: 15 },
-      neutral: { prob: 35, return: 5 },
-      bearish: { prob: 20, return: -8 },
+      bullish: { prob: 0, return: 0 },
+      neutral: { prob: 0, return: 0 },
+      bearish: { prob: 0, return: 0 },
     },
-    scenarios: [
-      { scenario: 'أفضل حالة', value: 57700, change: 15 },
-      { scenario: 'الحالة المتوسطة', value: 52680, change: 5 },
-      { scenario: 'أسوأ حالة', value: 46160, change: -8 },
-    ],
+    scenarios: [],
   },
-  strengths: [
-    'تنوع جيد في أنواع الأصول',
-    'عائد توزيعات منتظم',
-    'سيولة عالية',
-    'أسهم شرعية بالكامل',
-    'مركز مالي قوي للشركات المملوكة',
-  ],
-  weaknesses: [
-    'تركز في قطاع البنوك',
-    'نقص التعرض للقطاع التقني',
-    'أداء ضعيف في قطاع الطاقة',
-    'مخاطر تركز في السوق السعودي فقط',
-  ],
+  strengths: [],
+  weaknesses: [],
   optimization: {
-    currentAllocation: [
-      { sector: 'البنوك', current: 35, optimal: 25 },
-      { sector: 'الاتصالات', current: 28, optimal: 20 },
-      { sector: 'الطاقة', current: 12, optimal: 15 },
-      { sector: 'العقارات', current: 15, optimal: 25 },
-      { sector: 'أخرى', current: 10, optimal: 15 },
-    ],
-    suggestedTrades: [
-      { action: 'بيع', stock: 'أرامكو', qty: 50, reason: 'تقليل الوزن' },
-      { action: 'بيع', stock: 'الراجحي', qty: 30, reason: 'جني أرباح' },
-      { action: 'شراء', stock: 'دار الأركان', qty: 100, reason: 'تنويع عقاري' },
-      { action: 'شراء', stock: 'صندوق الريت', qty: 50, reason: 'عوائد مستقرة' },
-    ],
+    currentAllocation: [],
+    suggestedTrades: [],
   },
   benchmark: {
-    vsTasi: { performance: 2.3, status: 'outperform' },
-    vsSector: { performance: 1.5, status: 'outperform' },
-    riskAdjusted: { performance: 0.8, status: 'outperform' },
+    vsTasi: { performance: 0, status: 'neutral' },
+    vsSector: { performance: 0, status: 'neutral' },
+    riskAdjusted: { performance: 0, status: 'neutral' },
   },
 };
 
@@ -284,6 +217,29 @@ export default function PortfolioAIPage() {
   const [allSnapshots, setAllSnapshots] = useState<any[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'value', direction: 'desc' });
   const [tableSearch, setTableSearch] = useState('');
+
+  interface StockTech {
+    symbol: string;
+    name: string;
+    type: string;
+    price: number;
+    change7d: number;
+    change30d: number;
+    rsi: number | null;
+    ma20: number | null;
+    ma50: number | null;
+    support: number | null;
+    resistance: number | null;
+    signal: 'شراء قوي' | 'شراء' | 'احتفاظ' | 'بيع' | 'بيع قوي';
+    signalScore: number;
+    aiNote: string;
+    volatility: number;
+  }
+  const [stockTechMap, setStockTechMap] = useState<Map<string, StockTech>>(new Map());
+  const [techLoading, setTechLoading] = useState(false);
+  const [expandedStock, setExpandedStock] = useState<string | null>(null);
+  const [stockAiLoading, setStockAiLoading] = useState<string | null>(null);
+  const [stockAiResults, setStockAiResults] = useState<Map<string, string>>(new Map());
 
   const linkedSymbol = (searchParams.get('symbol') || '').trim().toUpperCase();
   const linkedName = (searchParams.get('name') || '').trim();
@@ -478,6 +434,261 @@ export default function PortfolioAIPage() {
     });
   };
 
+  function computeRSI(closes: number[], period = 14): number | null {
+    if (closes.length < period + 1) return null;
+    const changes = closes.slice(1).map((c, i) => c - closes[i]);
+    const recent = changes.slice(-period);
+    let sumGain = 0, sumLoss = 0;
+    for (const c of recent) { if (c > 0) sumGain += c; else sumLoss += Math.abs(c); }
+    const avgGain = sumGain / period;
+    const avgLoss = sumLoss / period;
+    if (avgLoss === 0) return 100;
+    return parseFloat((100 - 100 / (1 + avgGain / avgLoss)).toFixed(1));
+  }
+
+  function computeMA(closes: number[], period: number): number | null {
+    if (closes.length < period) return null;
+    const slice = closes.slice(-period);
+    return parseFloat((slice.reduce((a, b) => a + b, 0) / period).toFixed(4));
+  }
+
+  function getSignal(rsi: number | null, price: number, ma20: number | null, ma50: number | null): { signal: StockTech['signal']; score: number } {
+    if (rsi === null) return { signal: 'احتفاظ', score: 50 };
+    let score = 50;
+    if (rsi < 30) score += 25;
+    else if (rsi < 40) score += 15;
+    else if (rsi > 70) score -= 25;
+    else if (rsi > 60) score -= 15;
+    if (ma20 && ma50) {
+      if (ma20 > ma50) score += 10;
+      else score -= 10;
+      if (price > ma20) score += 5;
+      else score -= 5;
+      if (price > ma50) score += 5;
+      else score -= 5;
+    }
+    score = Math.max(0, Math.min(100, score));
+    if (score >= 75) return { signal: 'شراء قوي', score };
+    if (score >= 60) return { signal: 'شراء', score };
+    if (score > 40) return { signal: 'احتفاظ', score };
+    if (score > 25) return { signal: 'بيع', score };
+    return { signal: 'بيع قوي', score };
+  }
+
+  const fetchAllStockTech = useCallback(async () => {
+    if (allConsolidatedAssets.length === 0) return;
+    setTechLoading(true);
+    const newMap = new Map<string, StockTech>();
+    const assets = allConsolidatedAssets.filter(a => a.symbol);
+    const BATCH = 6;
+    for (let i = 0; i < assets.length; i += BATCH) {
+      const batch = assets.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(async (asset) => {
+          const yahooSymbol = toYahooSymbolForAsset(asset.symbol, asset.originalType as AnalysisAssetType);
+          try {
+            const res = await fetch(`/api/chart?symbol=${encodeURIComponent(yahooSymbol)}&range=6mo&interval=1d`, { signal: AbortSignal.timeout(12000) });
+            if (!res.ok) return null;
+            const payload = await res.json();
+            const bars = payload?.data || [];
+            const closes = bars.map((b: any) => Number(b?.close)).filter((v: number) => Number.isFinite(v) && v > 0);
+            if (closes.length < 20) return null;
+            const price = closes[closes.length - 1];
+            const ma20 = computeMA(closes, 20);
+            const ma50 = computeMA(closes, 50);
+            const rsi = computeRSI(closes);
+            const recent20 = closes.slice(-20);
+            const support = parseFloat(Math.min(...recent20).toFixed(4));
+            const resistance = parseFloat(Math.max(...recent20).toFixed(4));
+            const change7d = closes.length >= 7 ? ((price / closes[closes.length - 7]) - 1) * 100 : 0;
+            const change30d = closes.length >= 30 ? ((price / closes[closes.length - 30]) - 1) * 100 : 0;
+            const returns = closes.slice(1).map((c, idx) => closes[idx] > 0 ? (c - closes[idx]) / closes[idx] : 0);
+            const avg = returns.reduce((s, v) => s + v, 0) / (returns.length || 1);
+            const variance = returns.reduce((s, v) => s + ((v - avg) ** 2), 0) / (returns.length || 1);
+            const volatility = parseFloat((Math.sqrt(Math.max(variance, 0)) * Math.sqrt(252) * 100).toFixed(2));
+            const { signal, score } = getSignal(rsi, price, ma20, ma50);
+            let aiNote = '';
+            if (signal === 'شراء قوي') aiNote = 'السهم في منطقة تشبع بيعي مع تقاطع إيجابي للمتوسطات';
+            else if (signal === 'شراء') aiNote = 'إشارة شراء مع زخم إيجابي';
+            else if (signal === 'بيع قوي') aiNote = 'السهم في منطقة تشبع شرائي مع تقاطع سلبي';
+            else if (signal === 'بيع') aiNote = 'إشارة ضعف مع زخم سلبي';
+            else if (rsi !== null && rsi > 45 && rsi < 55) aiNote = 'السهم في منطقة محايدة — انتظر إشارة أوضح';
+            else aiNote = 'لا توجد إشارة واضحة حالياً';
+            return {
+              symbol: asset.symbol,
+              name: asset.name || asset.symbol,
+              type: asset.displayType,
+              price, change7d: parseFloat(change7d.toFixed(2)), change30d: parseFloat(change30d.toFixed(2)),
+              rsi, ma20, ma50, support, resistance, signal, signalScore: score, aiNote, volatility,
+            } as StockTech;
+          } catch { return null; }
+        })
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) {
+          newMap.set(r.value.symbol, r.value);
+        }
+      }
+    }
+    setStockTechMap(newMap);
+    setTechLoading(false);
+  }, [allConsolidatedAssets]);
+
+  useEffect(() => {
+    if (allConsolidatedAssets.length > 0 && stockTechMap.size === 0) {
+      fetchAllStockTech();
+    }
+  }, [allConsolidatedAssets.length]);
+
+  const analyzeStockWithAI = async (stock: StockTech) => {
+    setStockAiLoading(stock.symbol);
+    try {
+      const resolved = resolveProvider(selectedProvider);
+      const providerInfo = SHARED_PROVIDERS.find(p => p.id === selectedProvider);
+      const effectiveResolved = (providerInfo?.needsKey && providerApiKey?.trim())
+        ? { provider: selectedProvider, apiKey: providerApiKey.trim(), model: selectedModel }
+        : { ...resolved, model: selectedModel };
+
+      const prompt = `أنت محلل فني محترف. حلل السهم التالي وأعطني تحليل مختصر 3-4 أسطر بالعربي يتضمن: الترند الحالي، أقرب دعم ومقاومة، وتوصية (شراء/بيع/احتفاظ) مع السبب.
+السهم: ${stock.symbol} (${stock.name})
+السعر الحالي: ${stock.price}
+RSI(14): ${stock.rsi ?? 'غير متوفر'}
+MA20: ${stock.ma20 ?? 'غير متوفر'}
+MA50: ${stock.ma50 ?? 'غير متوفر'}
+الدعم: ${stock.support ?? 'غير متوفر'}
+المقاومة: ${stock.resistance ?? 'غير متوفر'}
+التغير 7 أيام: ${stock.change7d}%
+التغير 30 يوم: ${stock.change30d}%
+التقلب السنوي: ${stock.volatility}%
+أجب بنص عربي مباشر بدون JSON.`;
+
+      const res = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: effectiveResolved.provider, model: effectiveResolved.model || undefined, apiKey: effectiveResolved.apiKey || undefined, prompt }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStockAiResults(prev => { const m = new Map(prev); m.set(stock.symbol, data.content); return m; });
+      } else {
+        toast({ title: 'خطأ', description: data.error || 'تعذر التحليل', variant: 'destructive' });
+      }
+    } catch (e: any) {
+      toast({ title: 'خطأ', description: e.message || 'حدث خطأ', variant: 'destructive' });
+    } finally {
+      setStockAiLoading(null);
+    }
+  };
+
+  const techColumns = (symbol: string) => {
+    const tech = stockTechMap.get(symbol);
+    const signalColor = !tech ? 'bg-gray-100 text-gray-500' :
+      tech.signal === 'شراء قوي' ? 'bg-emerald-600 text-white' :
+      tech.signal === 'شراء' ? 'bg-emerald-100 text-emerald-700' :
+      tech.signal === 'بيع قوي' ? 'bg-red-600 text-white' :
+      tech.signal === 'بيع' ? 'bg-red-100 text-red-700' :
+      'bg-gray-100 text-gray-600';
+    return (
+      <>
+        <td className="py-3">
+          <button
+            onClick={() => setExpandedStock(expandedStock === symbol ? null : symbol)}
+            className={cn('px-2 py-1 rounded text-[11px] font-bold cursor-pointer hover:opacity-80', signalColor)}
+          >
+            {tech?.signal || '—'}
+          </button>
+        </td>
+        <td className="py-3 text-center">
+          <span className={cn('text-xs font-bold', (tech?.rsi ?? 50) > 70 ? 'text-red-600' : (tech?.rsi ?? 50) < 30 ? 'text-emerald-600' : 'text-muted-foreground')}>
+            {tech?.rsi?.toFixed(0) ?? '—'}
+          </span>
+        </td>
+        <td className="py-3 text-center">
+          <span className="text-xs text-emerald-600 font-mono">{tech?.support?.toFixed(2) ?? '—'}</span>
+        </td>
+        <td className="py-3 text-center">
+          <span className="text-xs text-red-600 font-mono">{tech?.resistance?.toFixed(2) ?? '—'}</span>
+        </td>
+        <td className="py-3 text-center">
+          <span className={cn('text-xs font-mono', tech && tech.ma20 && tech.price > tech.ma20 ? 'text-emerald-600' : tech && tech.ma20 ? 'text-red-600' : 'text-muted-foreground')}>
+            {tech?.ma20?.toFixed(2) ?? '—'}
+          </span>
+        </td>
+        <td className="py-3 text-center">
+          <span className={cn('text-xs font-mono', tech && tech.ma50 && tech.price > tech.ma50 ? 'text-emerald-600' : tech && tech.ma50 ? 'text-red-600' : 'text-muted-foreground')}>
+            {tech?.ma50?.toFixed(2) ?? '—'}
+          </span>
+        </td>
+      </>
+    );
+  };
+
+  const expandedStockDetail = (asset: any) => {
+    const tech = stockTechMap.get(asset.symbol);
+    if (!tech) return null;
+    return (
+      <tr key={`${asset.symbol}-detail`}>
+        <td colSpan={15} className="p-0">
+          <div className="px-6 py-4 bg-muted/30 border-b space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              <div className="p-2 rounded-lg bg-background text-center">
+                <p className="text-[10px] text-muted-foreground">تغير 7 أيام</p>
+                <p className={cn('text-sm font-bold', tech.change7d >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                  {tech.change7d > 0 ? '+' : ''}{formatPercent(tech.change7d)}
+                </p>
+              </div>
+              <div className="p-2 rounded-lg bg-background text-center">
+                <p className="text-[10px] text-muted-foreground">تغير 30 يوم</p>
+                <p className={cn('text-sm font-bold', tech.change30d >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                  {tech.change30d > 0 ? '+' : ''}{formatPercent(tech.change30d)}
+                </p>
+              </div>
+              <div className="p-2 rounded-lg bg-background text-center">
+                <p className="text-[10px] text-muted-foreground">التقلب السنوي</p>
+                <p className="text-sm font-bold">{tech.volatility}%</p>
+              </div>
+              <div className="p-2 rounded-lg bg-background text-center">
+                <p className="text-[10px] text-muted-foreground">نقاط التقييم</p>
+                <div className="flex items-center gap-1 justify-center">
+                  <div className="w-12 bg-muted rounded-full h-2"><div className={cn('h-2 rounded-full', tech.signalScore >= 60 ? 'bg-emerald-500' : tech.signalScore > 40 ? 'bg-amber-500' : 'bg-red-500')} style={{ width: `${tech.signalScore}%` }} /></div>
+                  <span className="text-xs font-bold">{tech.signalScore}</span>
+                </div>
+              </div>
+              <div className="p-2 rounded-lg bg-background text-center">
+                <p className="text-[10px] text-muted-foreground">MA20/MA50</p>
+                <p className={cn('text-xs font-bold', tech.ma20 && tech.ma50 && tech.ma20 > tech.ma50 ? 'text-emerald-600' : 'text-red-600')}>
+                  {tech.ma20 && tech.ma50 ? (tech.ma20 > tech.ma50 ? '↑ تقاطع إيجابي' : '↓ تقاطع سلبي') : '—'}
+                </p>
+              </div>
+              <div className="p-2 rounded-lg bg-primary/5 border border-primary/20 text-center">
+                <p className="text-[10px] text-muted-foreground">التقييم</p>
+                <p className="text-xs">{tech.aiNote}</p>
+              </div>
+            </div>
+            {stockAiResults.get(asset.symbol) && (
+              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800">
+                <p className="text-xs font-medium text-amber-700 dark:text-amber-300 mb-1 flex items-center gap-1"><Sparkles className="h-3 w-3" /> تحليل الذكاء الاصطناعي</p>
+                <p className="text-sm whitespace-pre-wrap">{stockAiResults.get(asset.symbol)}</p>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="gap-1 h-7 text-xs" onClick={() => analyzeStockWithAI(tech)} disabled={stockAiLoading === asset.symbol}>
+                {stockAiLoading === asset.symbol ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                تحليل ذكي بالAI
+              </Button>
+              <Link href={`/technical-analysis?symbol=${encodeURIComponent(asset.symbol)}&type=stocks&name=${encodeURIComponent(asset.name || '')}`}>
+                <Button size="sm" variant="outline" className="gap-1 h-7 text-xs">
+                  <BarChart3 className="h-3 w-3" />
+                  التحليل الفني الكامل
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   const allAssets = useMemo<FocusAssetContext[]>(() => {
     if (allConsolidatedAssets.length === 0) return [];
     return allConsolidatedAssets.map(item => ({
@@ -490,19 +701,35 @@ export default function PortfolioAIPage() {
   }, [allConsolidatedAssets]);
 
   const consolidatedStats = useMemo(() => {
-    let totalCost = 0;
+    let computedCost = 0;
     let totalValue = 0;
 
     allConsolidatedAssets.forEach((asset) => {
-      totalCost += asset.costConv;
+      computedCost += asset.costConv;
       totalValue += asset.valConv;
     });
 
+    const hasManualCapital = typeof dashboardData.manualInvestedCapitalSar === 'number'
+      && Number.isFinite(dashboardData.manualInvestedCapitalSar)
+      && dashboardData.manualInvestedCapitalSar > 0;
+    const manualCost = hasManualCapital
+      ? convertCurrency(dashboardData.manualInvestedCapitalSar!, 'SAR', displayCurrency)
+      : null;
+    const totalCost = manualCost ?? computedCost;
     const pnl = totalValue - totalCost;
     const pnlPct = totalCost > 0 ? (pnl / totalCost) * 100 : 0;
+    const capitalDifference = manualCost != null ? (manualCost - computedCost) : null;
 
-    return { totalCost, totalValue, pnl, pnlPct };
-  }, [allConsolidatedAssets]);
+    return {
+      totalCost,
+      totalValue,
+      pnl,
+      pnlPct,
+      computedCost,
+      isManualCapitalApplied: manualCost != null,
+      capitalDifference,
+    };
+  }, [allConsolidatedAssets, dashboardData.manualInvestedCapitalSar, displayCurrency]);
 
   const distributionByType = useMemo(() => {
     const map: Record<string, number> = {};
@@ -615,7 +842,7 @@ export default function PortfolioAIPage() {
       diversification,
       riskScore,
       scenarios,
-      currentAllocation: currentAllocation.length ? currentAllocation : initialPortfolioAnalysis.optimization.currentAllocation,
+      currentAllocation: currentAllocation.length ? currentAllocation : [],
       benchmarkDelta,
       benchmarkSector,
       benchmarkRiskAdjusted,
@@ -824,7 +1051,17 @@ export default function PortfolioAIPage() {
 استخدم البيانات الحية المضمنة (liveTopPositions + categories + marketStats) لزيادة دقة التوصيات.
 ${focusInstructions}
 الهدف الحصري: قم برد إجابتك **حصرياً** بتنسيق JSON (بدون تضمين الأقواس المعكوسة Markdown أو كلمة json) ومطابق تماماً لهذا الهيكل بحيث يمكن لبرنامجي القيام بـ JSON.parse(response) دون أي أخطاء:
-${JSON.stringify(initialPortfolioAnalysis, null, 2)}
+${JSON.stringify({
+  overallScore: 0,
+  lastUpdated: '',
+  recommendations: [{ id: 0, type: 'action', priority: 'high', title: '', description: '', impact: '', action: '' }],
+  riskAnalysis: { overallRisk: '', riskScore: 0, diversification: 0, concentration: 0, volatility: 0, sharpeRatio: 0, maxDrawdown: 0, beta: 0, factors: [{ name: '', level: 0, description: '' }] },
+  performance: { expected: { bullish: { prob: 0, return: 0 }, neutral: { prob: 0, return: 0 }, bearish: { prob: 0, return: 0 } }, scenarios: [{ scenario: '', value: 0, change: 0 }] },
+  strengths: [''],
+  weaknesses: [''],
+  optimization: { currentAllocation: [{ sector: '', current: 0, optimal: 0 }], suggestedTrades: [{ action: '', stock: '', qty: 0, reason: '' }] },
+  benchmark: { vsTasi: { performance: 0, status: '' }, vsSector: { performance: 0, status: '' }, riskAdjusted: { performance: 0, status: '' } },
+}, null, 2)}
 
 بيانات المحفظة الحالية للدروس والتحليل:
 ${JSON.stringify(portfolioData)}
@@ -867,34 +1104,6 @@ ${JSON.stringify(portfolioData)}
     } finally {
       setIsAnalyzing(false);
     }
-  };
-
-  // دالة لمحاكاة التحليل بدون إنترنت أو API
-  const handleSimulate = () => {
-    setIsAnalyzing(true);
-
-    // افتعال تأخير زمني لمحاكاة انتظار رد السيرفر
-    setTimeout(() => {
-      setAnalysis((prev: any) => ({
-        ...initialPortfolioAnalysis,
-        overallScore: liveBaseline.overallScore,
-        recommendations: [
-          {
-            id: 99,
-            type: 'optimization',
-            priority: 'medium',
-            title: 'محاكاة التحليل (Offline Mode)',
-            description: 'تم إنشاء هذا التحليل محلياً لاختبار الواجهة بدون إنترنت أو استهلاك رصيد الذكاء الاصطناعي.',
-            impact: 'توفير تكلفة API',
-            action: 'اختبار الواجهة بنجاح',
-          },
-          ...initialPortfolioAnalysis.recommendations.slice(0, 3)
-        ],
-      }));
-      setAnalysisFromAI(true);
-      setIsAnalyzing(false);
-      toast({ title: 'وضع المحاكاة', description: 'تم عرض بيانات تحليل وهمية بنجاح.' });
-    }, 1500);
   };
 
   const chartConfig = {
@@ -944,14 +1153,6 @@ ${JSON.stringify(portfolioData)}
                 طباعة
               </Button>
               <Button
-                variant="secondary"
-                onClick={handleSimulate}
-                disabled={isAnalyzing}
-                className="gap-2"
-              >
-                محاكاة (Offline)
-              </Button>
-              <Button
                 onClick={handleAnalyze}
                 disabled={isAnalyzing}
                 className="gap-2"
@@ -986,7 +1187,7 @@ ${JSON.stringify(portfolioData)}
               <CardContent className="p-4 flex flex-col gap-1">
                 <p className="text-sm text-muted-foreground flex items-center gap-2">
                   <Calculator className="h-4 w-4" />
-                  التكلفة الإجمالية
+                  {consolidatedStats.isManualCapitalApplied ? 'رأس المال المستثمر الفعلي' : 'التكلفة الإجمالية'}
                 </p>
                 <p className="text-2xl font-bold">{formatCurrency(consolidatedStats.totalCost)}</p>
               </CardContent>
@@ -1014,6 +1215,22 @@ ${JSON.stringify(portfolioData)}
               </CardContent>
             </Card>
           </div>
+
+          {consolidatedStats.isManualCapitalApplied && (
+            <Card className="border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20">
+              <CardContent className="p-3 text-xs text-muted-foreground space-y-1">
+                <p className="font-semibold text-emerald-700 dark:text-emerald-300">
+                  تم اعتماد رأس المال المستثمر الفعلي من ملف الاستثمار كأساس للربح/الخسارة.
+                </p>
+                <p>
+                  التكلفة المحسوبة من المراكز: {formatCurrency(consolidatedStats.computedCost)}
+                  {typeof consolidatedStats.capitalDifference === 'number' && (
+                    <> · الفرق: {consolidatedStats.capitalDifference >= 0 ? '+' : ''}{formatCurrency(consolidatedStats.capitalDifference)}</>
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           {showProviderPanel && (
             <Card className="border-amber-300/50 bg-amber-50/50 dark:bg-amber-950/20">
@@ -1316,11 +1533,9 @@ ${JSON.stringify(portfolioData)}
 
           {/* التحليل التفصيلي */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="overview">نظرة عامة</TabsTrigger>
-              <TabsTrigger value="risk">المخاطر</TabsTrigger>
-              <TabsTrigger value="optimization">التحسين</TabsTrigger>
-              <TabsTrigger value="scenarios">السيناريوهات</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="overview">نظرة عامة والمخاطر</TabsTrigger>
+              <TabsTrigger value="optimization">التحسين والسيناريوهات</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="space-y-6 mt-6">
@@ -1392,10 +1607,9 @@ ${JSON.stringify(portfolioData)}
                   </Card>
                 </div>
               </div>
-            </TabsContent>
 
-            <TabsContent value="risk" className="space-y-6 mt-6">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              {/* المخاطر */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Card>
                   <CardContent className="p-4 text-center">
                     <p className="text-sm text-muted-foreground mb-2">مخاطر إجمالية</p>
@@ -1523,9 +1737,8 @@ ${JSON.stringify(portfolioData)}
                   </div>
                 </CardContent>
               </Card>
-            </TabsContent>
 
-            <TabsContent value="scenarios" className="space-y-6 mt-6">
+              {/* السيناريوهات */}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
@@ -1579,6 +1792,10 @@ ${JSON.stringify(portfolioData)}
                 <Button variant="outline" size="sm" onClick={handleExportExcel} className="gap-2 h-9">
                   <Download className="h-4 w-4" />
                   تصدير Excel
+                </Button>
+                <Button variant="outline" size="sm" onClick={fetchAllStockTech} disabled={techLoading} className="gap-2 h-9">
+                  <RefreshCw className={cn('h-4 w-4', techLoading && 'animate-spin')} />
+                  تحديث التحليل الفني
                 </Button>
               </div>
             </CardHeader>
@@ -1811,6 +2028,12 @@ ${JSON.stringify(portfolioData)}
                           <ArrowUpDown className="h-3 w-3 opacity-50" />
                         </div>
                       </th>
+                      <th className="pb-2 font-medium">التوصية</th>
+                      <th className="pb-2 font-medium">RSI</th>
+                      <th className="pb-2 font-medium">الدعم</th>
+                      <th className="pb-2 font-medium">المقاومة</th>
+                      <th className="pb-2 font-medium">MA20</th>
+                      <th className="pb-2 font-medium">MA50</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1830,8 +2053,8 @@ ${JSON.stringify(portfolioData)}
                       else if (asset.displayType === 'صك' || asset.displayType === 'سند') AssetIcon = Landmark;
 
                       return (
+                        <React.Fragment key={`${asset.symbol}-${idx}`}>
                         <tr
-                          key={`${asset.symbol}-${idx}`}
                           className={cn(
                             "border-b last:border-0 transition-colors",
                             pnl > 0 ? "bg-emerald-50/40 hover:bg-emerald-100/50 dark:bg-emerald-900/10 dark:hover:bg-emerald-900/20" :
@@ -1869,12 +2092,15 @@ ${JSON.stringify(portfolioData)}
                               {pnlPct > 0 ? '+' : ''}{formatPercent(pnlPct)}
                             </Badge>
                           </td>
+                          {techColumns(asset.symbol)}
                         </tr>
+                        {expandedStock === asset.symbol && expandedStockDetail(asset)}
+                        </React.Fragment>
                       );
                     })}
                     {allConsolidatedAssets.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="py-6 text-center text-muted-foreground">لا توجد أصول لعرضها</td>
+                        <td colSpan={15} className="py-6 text-center text-muted-foreground">لا توجد أصول لعرضها</td>
                       </tr>
                     )}
                   </tbody>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { resolveAssetMarket } from '@/lib/asset-market';
+import { parseActualInvestedCapitalSar } from '@/lib/profile-finance';
 
 const EXCHANGE_RATES: Record<string, number> = {
   SAR: 1,
@@ -109,11 +110,106 @@ interface DashboardPortfolio {
 
 interface TickerQuote { price: number; change: number; changePct: number; }
 interface LiveCryptoItem { price: number; change: number; changePct: number; source: string; lastUpdate: number; }
+interface LiveMarketPrice {
+  price: number;
+  change?: number;
+  changePct?: number;
+  volume?: number;
+  marketCap?: number;
+  high52w?: number | null;
+  low52w?: number | null;
+  shortRatio?: number | null;
+  shortPercentOfFloat?: number | null;
+  sharesShort?: number | null;
+  sharesOutstanding?: number | null;
+  floatShares?: number | null;
+  shortDataSource?: string | null;
+}
 interface ForexPair {
   symbol: string; name: string; price: number; change: number; changePct: number;
   baseCurrency: string; quoteCurrency: string; category: string;
 }
 interface LiveFundItem { symbol?: string; name: string; price?: number; change?: number; changePct?: number; type?: string; }
+interface MarketHubQuote {
+  symbol: string;
+  name?: string;
+  price: number;
+  change?: number | null;
+  changePct?: number | null;
+  source?: string | null;
+  lastUpdate?: number;
+  volume?: number | null;
+  marketCap?: number | null;
+  high52w?: number | null;
+  low52w?: number | null;
+  shortRatio?: number | null;
+  shortPercentOfFloat?: number | null;
+  sharesShort?: number | null;
+  sharesOutstanding?: number | null;
+  floatShares?: number | null;
+  shortDataSource?: string | null;
+}
+interface MarketHubResponse {
+  success?: boolean;
+  data?: Record<string, MarketHubQuote>;
+}
+type RawStock = {
+  id?: string;
+  symbol?: string;
+  name?: string;
+  exchange?: string;
+  currency?: string;
+  sector?: string;
+  industry?: string;
+  qty?: number;
+  buyPrice?: number;
+  currentPrice?: number;
+  change?: number;
+  changePct?: number;
+  totalCost?: number | null;
+  currentValue?: number | null;
+  profitLoss?: number | null;
+  profitLossPct?: number | null;
+  buyCurrency?: string | null;
+};
+type RawBond = {
+  id?: string;
+  symbol?: string;
+  name?: string;
+  exchange?: string;
+  currency?: string;
+  type?: string;
+  faceValue?: number;
+  couponRate?: number;
+  maturityDate?: string;
+  qty?: number;
+  buyPrice?: number;
+  currentPrice?: number;
+};
+type RawFund = {
+  id?: string;
+  symbol?: string;
+  name?: string;
+  exchange?: string;
+  currency?: string;
+  fundType?: string;
+  units?: number;
+  buyPrice?: number;
+  currentPrice?: number;
+  ytdReturn?: number;
+};
+type RawPortfolio = {
+  id?: string;
+  name?: string;
+  description?: string;
+  type?: string;
+  currency?: string;
+  isActive?: boolean;
+  stocks?: RawStock[];
+  funds?: RawFund[];
+  bonds?: RawBond[];
+  [key: string]: unknown;
+};
 
 interface AssetCategory {
   label: string;
@@ -134,8 +230,12 @@ interface DashboardData {
   liveFunds: LiveFundItem[];
   totalPortfolioValue: number;
   totalPortfolioCost: number;
+  computedPortfolioCost: number;
   totalProfitLoss: number;
   totalProfitLossPct: number;
+  manualInvestedCapitalSar: number | null;
+  capitalDifferenceSar: number | null;
+  isManualCapitalApplied: boolean;
   totalStocks: number;
   totalBonds: number;
   totalFunds: number;
@@ -152,7 +252,14 @@ interface DashboardData {
 const EMPTY_DATA: DashboardData = {
   portfolios: [], stocks: [], bonds: [], funds: [],
   ticker: {}, crypto: {}, forex: [], liveFunds: [],
-  totalPortfolioValue: 0, totalPortfolioCost: 0, totalProfitLoss: 0, totalProfitLossPct: 0,
+  totalPortfolioValue: 0,
+  totalPortfolioCost: 0,
+  computedPortfolioCost: 0,
+  totalProfitLoss: 0,
+  totalProfitLossPct: 0,
+  manualInvestedCapitalSar: null,
+  capitalDifferenceSar: null,
+  isManualCapitalApplied: false,
   totalStocks: 0, totalBonds: 0, totalFunds: 0, isAuthenticated: false,
   assetCategories: [], stockTotalSAR: 0, bondTotalSAR: 0, fundTotalSAR: 0,
   cryptoTotalSAR: 0, forexTotalSAR: 0, commodityTotalSAR: 0,
@@ -162,6 +269,187 @@ function fetchWithTimeout(url: string, timeoutMs: number = 8000): Promise<Respon
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function toNumber(value: unknown): number | undefined {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function normalizeMarketHubMap(payload: unknown): Record<string, MarketHubQuote> {
+  const root = toRecord(payload) as MarketHubResponse;
+  if (!root.success || !root.data || typeof root.data !== 'object') return {};
+  return root.data;
+}
+
+function toTickerMap(quotes: Record<string, MarketHubQuote>): Record<string, TickerQuote> {
+  const out: Record<string, TickerQuote> = {};
+  for (const [symbol, quote] of Object.entries(quotes)) {
+    const price = Number(quote.price);
+    if (!Number.isFinite(price)) continue;
+    out[symbol] = {
+      price,
+      change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+      changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+    };
+  }
+  return out;
+}
+
+function toForexPairs(quotes: Record<string, MarketHubQuote>): ForexPair[] {
+  const out = new Map<string, ForexPair>();
+  const major = new Set(['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD', 'NZDUSD']);
+  const arab = new Set(['USDSAR', 'USDAED', 'USDKWD', 'USDEGP', 'USDQAR', 'USDBHD', 'USDOMR', 'USDJOD']);
+  const emerging = new Set(['USDTRY', 'USDCNY', 'USDINR', 'USDMXN', 'USDZAR']);
+
+  const normalize = (symbol: string): string => {
+    const upper = symbol.toUpperCase().replace(/[^A-Z=]/g, '');
+    if (upper.endsWith('=X')) return upper.slice(0, -2);
+    if (upper.length === 3 && !upper.startsWith('USD')) return `USD${upper}`;
+    return upper;
+  };
+
+  for (const [rawSymbol, quote] of Object.entries(quotes)) {
+    const normalized = normalize(rawSymbol);
+    if (!normalized || normalized.length < 6) continue;
+    const baseCurrency = normalized.slice(0, 3);
+    const quoteCurrency = normalized.slice(3, 6);
+    const canonical = `${baseCurrency}${quoteCurrency}`;
+    const price = Number(quote.price);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    if (out.has(canonical)) continue;
+
+    let category = 'minor';
+    if (major.has(canonical)) category = 'major';
+    else if (arab.has(canonical)) category = 'arab';
+    else if (emerging.has(canonical)) category = 'emerging';
+
+    out.set(canonical, {
+      symbol: canonical,
+      name: `${baseCurrency}/${quoteCurrency}`,
+      price,
+      change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+      changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+      baseCurrency,
+      quoteCurrency,
+      category,
+    });
+  }
+
+  return Array.from(out.values());
+}
+
+function toLiveFunds(quotes: Record<string, MarketHubQuote>): LiveFundItem[] {
+  const out: LiveFundItem[] = [];
+  for (const [symbol, quote] of Object.entries(quotes)) {
+    const price = Number(quote.price);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const upper = symbol.toUpperCase();
+    const type =
+      upper.includes('SUKUK') ? 'sukuk'
+        : upper.includes('REIT') || /^[0-9]{4}\.SR$/.test(upper) ? 'reit'
+          : 'fund';
+
+    out.push({
+      symbol,
+      name: quote.name || symbol,
+      price,
+      change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+      changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+      type,
+    });
+  }
+  return out;
+}
+
+function toLivePriceMap(quotes: Record<string, MarketHubQuote>): Record<string, LiveMarketPrice> {
+  const out: Record<string, LiveMarketPrice> = {};
+  for (const [symbol, quote] of Object.entries(quotes)) {
+    const price = Number(quote.price);
+    if (!Number.isFinite(price)) continue;
+    out[symbol] = {
+      price,
+      change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+      changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+      volume: toNumber(quote.volume),
+      marketCap: toNumber(quote.marketCap),
+      high52w: quote.high52w ?? null,
+      low52w: quote.low52w ?? null,
+      shortRatio: quote.shortRatio ?? null,
+      shortPercentOfFloat: quote.shortPercentOfFloat ?? null,
+      sharesShort: quote.sharesShort ?? null,
+      sharesOutstanding: quote.sharesOutstanding ?? null,
+      floatShares: quote.floatShares ?? null,
+      shortDataSource: quote.shortDataSource ?? null,
+    };
+  }
+  return out;
+}
+
+const EXCHANGE_SUFFIX_MAP: Record<string, string> = {
+  TADAWUL: '.SR', SAUDI: '.SR', TASI: '.SR',
+  ADX: '.AD', DFM: '.DU',
+  KSE: '.KW', BOURSA: '.KW',
+  QSE: '.QA', QATAR: '.QA',
+  BHB: '.BH', BAHRAIN: '.BH',
+  EGX: '.CA', EGYPT: '.CA',
+  MSM: '.OM', MSX: '.OM', OMAN: '.OM',
+  ASE: '.JO', AMMAN: '.JO',
+  LSE: '.L', LONDON: '.L',
+};
+
+const PRICE_PREFIXES = ['SAUDI_', 'ADX_', 'DFM_', 'KSE_', 'QSE_', 'BHX_', 'MSX_', 'EGX_', 'ASE_', 'FUND_', 'US_'];
+
+function buildPriceCandidates(symbol: string, exchange?: string): string[] {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return [];
+  const candidates = new Set<string>();
+  const addCandidate = (candidate?: string | null) => {
+    if (!candidate) return;
+    const cleaned = candidate.trim().toUpperCase();
+    if (!cleaned) return;
+    candidates.add(cleaned);
+    candidates.add(cleaned.replace(/\./g, '_'));
+  };
+
+  addCandidate(normalized);
+  const dotIndex = normalized.indexOf('.');
+  if (dotIndex > 0) addCandidate(normalized.substring(0, dotIndex));
+
+  if (!normalized.includes('.') && exchange) {
+    const upperExch = exchange.toUpperCase().trim();
+    for (const [key, suffix] of Object.entries(EXCHANGE_SUFFIX_MAP)) {
+      if (upperExch.includes(key)) {
+        addCandidate(`${normalized}${suffix}`);
+        break;
+      }
+    }
+  }
+
+  const baseCandidates = Array.from(candidates);
+  for (const prefix of PRICE_PREFIXES) {
+    for (const base of baseCandidates) addCandidate(`${prefix}${base}`);
+  }
+
+  return Array.from(candidates);
+}
+
+function resolvePriceEntry(prices: Record<string, LiveMarketPrice>, symbol: string, exchange?: string): LiveMarketPrice | null {
+  const candidates = buildPriceCandidates(symbol, exchange);
+  for (const candidate of candidates) {
+    const entry = prices[candidate];
+    if (entry?.price != null) return entry;
+  }
+
+  const lowerCandidates = new Set(candidates.map((item) => item.toLowerCase()));
+  for (const [key, entry] of Object.entries(prices)) {
+    if (lowerCandidates.has(key.toLowerCase()) && entry?.price != null) return entry;
+  }
+  return null;
 }
 
 function getCurrencyForAsset(
@@ -192,50 +480,112 @@ export function useDashboardData() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [portfoliosRes, tickerRes, cryptoRes, forexRes, fundsRes] = await Promise.allSettled([
+      const [portfoliosRes, stocksHubRes, cryptoHubRes, forexHubRes, fundsHubRes, profileRes] = await Promise.allSettled([
         fetchWithTimeout('/api/portfolios', 10000).catch(() => null),
-        fetchWithTimeout('/api/ticker', 8000).catch(() => null),
-        fetchWithTimeout('/api/real-prices?type=crypto', 8000).catch(() => null),
-        fetchWithTimeout('/api/forex', 8000).catch(() => null),
-        fetchWithTimeout('/api/funds?type=all', 8000).catch(() => null),
+        fetchWithTimeout('/api/market-hub?domain=stocks', 10000).catch(() => null),
+        fetchWithTimeout('/api/market-hub?domain=crypto', 8000).catch(() => null),
+        fetchWithTimeout('/api/market-hub?domain=forex', 8000).catch(() => null),
+        fetchWithTimeout('/api/market-hub?domain=funds', 8000).catch(() => null),
+        fetchWithTimeout('/api/profile', 10000).catch(() => null),
       ]);
 
-      let rawPortfolios: any[] = [];
+      let rawPortfolios: RawPortfolio[] = [];
       let ticker: Record<string, TickerQuote> = {};
-      let crypto: Record<string, LiveCryptoItem> = {};
+      const crypto: Record<string, LiveCryptoItem> = {};
       let forex: ForexPair[] = [];
       let liveFunds: LiveFundItem[] = [];
+      let livePrices: Record<string, LiveMarketPrice> = {};
+      let manualInvestedCapitalSar: number | null = null;
 
       if (portfoliosRes.status === 'fulfilled' && portfoliosRes.value && portfoliosRes.value.ok) {
         try { const json = await portfoliosRes.value.json(); rawPortfolios = json.portfolios || []; } catch {}
       }
-      if (tickerRes.status === 'fulfilled' && tickerRes.value && tickerRes.value.ok) {
-        try { const json = await tickerRes.value.json(); if (json.success && json.data) ticker = json.data; } catch {}
-      }
-      if (cryptoRes.status === 'fulfilled' && cryptoRes.value && cryptoRes.value.ok) {
-        try { const json = await cryptoRes.value.json(); if (json.success && json.data) crypto = json.data; } catch {}
-      }
-      if (forexRes.status === 'fulfilled' && forexRes.value && forexRes.value.ok) {
+
+      if (profileRes.status === 'fulfilled' && profileRes.value && profileRes.value.ok) {
         try {
-          const json = await forexRes.value.json();
-          if (json.categories) {
-            const cats = json.categories;
-            forex = [
-              ...(cats.major?.pairs || []), ...(cats.minor?.pairs || []),
-              ...(cats.emerging?.pairs || []), ...(cats.arab?.pairs || []),
-            ];
-          }
+          const profileJson = await profileRes.value.json();
+          manualInvestedCapitalSar = parseActualInvestedCapitalSar(profileJson?.profile?.preferences);
+        } catch {
+          manualInvestedCapitalSar = null;
+        }
+      }
+
+      if (stocksHubRes.status === 'fulfilled' && stocksHubRes.value && stocksHubRes.value.ok) {
+        try {
+          const json = await stocksHubRes.value.json();
+          const quotes = normalizeMarketHubMap(json);
+          ticker = toTickerMap(quotes);
+          livePrices = { ...livePrices, ...toLivePriceMap(quotes) };
         } catch {}
       }
-      if (fundsRes.status === 'fulfilled' && fundsRes.value && fundsRes.value.ok) {
+
+      if (cryptoHubRes.status === 'fulfilled' && cryptoHubRes.value && cryptoHubRes.value.ok) {
         try {
-          const json = await fundsRes.value.json();
-          const items: LiveFundItem[] = [];
-          if (json.reits) items.push(...json.reits.map((r: any) => ({ symbol: r.symbol, name: r.name, price: r.price, change: r.change, changePct: r.changePct, type: 'reit' })));
-          if (json.funds?.saudi) items.push(...json.funds.saudi.map((f: any) => ({ symbol: f.symbol, name: f.name, price: f.price, change: f.change, changePct: f.changePct, type: 'fund' })));
-          if (json.sukuk?.government) items.push(...json.sukuk.government.map((s: any) => ({ symbol: s.symbol, name: s.name, price: s.price, change: s.change, changePct: s.changePct, type: 'sukuk' })));
-          if (json.sukuk?.corporate) items.push(...json.sukuk.corporate.map((s: any) => ({ symbol: s.symbol, name: s.name, price: s.price, change: s.change, changePct: s.changePct, type: 'sukuk' })));
-          liveFunds = items;
+          const json = await cryptoHubRes.value.json();
+          const quotes = normalizeMarketHubMap(json);
+          for (const [key, quote] of Object.entries(quotes)) {
+            const price = Number(quote.price);
+            if (!Number.isFinite(price) || price <= 0) continue;
+            const item: LiveCryptoItem = {
+              price,
+              change: Number.isFinite(Number(quote.change)) ? Number(quote.change) : 0,
+              changePct: Number.isFinite(Number(quote.changePct)) ? Number(quote.changePct) : 0,
+              source: quote.source || 'market-hub',
+              lastUpdate: quote.lastUpdate || Date.now(),
+            };
+            crypto[key] = item;
+
+            const base = key.replace(/-USD$/i, '').replace(/-USDT$/i, '');
+            if (base && !crypto[base]) crypto[base] = item;
+          }
+
+          ticker = { ...ticker, ...toTickerMap(quotes) };
+          livePrices = { ...livePrices, ...toLivePriceMap(quotes) };
+        } catch {}
+      }
+
+      if (forexHubRes.status === 'fulfilled' && forexHubRes.value && forexHubRes.value.ok) {
+        try {
+          const json = await forexHubRes.value.json();
+          const quotes = normalizeMarketHubMap(json);
+          forex = toForexPairs(quotes);
+          ticker = { ...ticker, ...toTickerMap(quotes) };
+          livePrices = { ...livePrices, ...toLivePriceMap(quotes) };
+        } catch {}
+      }
+
+      if (fundsHubRes.status === 'fulfilled' && fundsHubRes.value && fundsHubRes.value.ok) {
+        try {
+          const json = await fundsHubRes.value.json();
+          const quotes = normalizeMarketHubMap(json);
+          liveFunds = toLiveFunds(quotes);
+          ticker = { ...ticker, ...toTickerMap(quotes) };
+          livePrices = { ...livePrices, ...toLivePriceMap(quotes) };
+        } catch {}
+      }
+
+      const symbolsToFetch = Array.from(new Set(
+        rawPortfolios.flatMap((portfolio) => [
+          ...(portfolio?.stocks || []).map((stock) => String(stock?.symbol || '').trim().toUpperCase()),
+          ...(portfolio?.funds || []).map((fund) => String(fund?.symbol || '').trim().toUpperCase()),
+          ...(portfolio?.bonds || []).map((bond) => String(bond?.symbol || '').trim().toUpperCase()),
+        ]).filter(Boolean)
+      ));
+
+      if (symbolsToFetch.length > 0) {
+        try {
+          const pricesRes = await fetchWithTimeout(
+            `/api/market-hub?domain=stocks&symbols=${encodeURIComponent(symbolsToFetch.join(','))}`,
+            12000
+          ).catch(() => null);
+          if (pricesRes && pricesRes.ok) {
+            const pricesJson = await pricesRes.json();
+            const symbolQuotes = normalizeMarketHubMap(pricesJson);
+            if (Object.keys(symbolQuotes).length > 0) {
+              livePrices = { ...livePrices, ...toLivePriceMap(symbolQuotes) };
+              ticker = { ...ticker, ...toTickerMap(symbolQuotes) };
+            }
+          }
         } catch {}
       }
 
@@ -250,59 +600,88 @@ export function useDashboardData() {
       let cryptoCostSAR = 0, forexCostSAR = 0, commodityCostSAR = 0;
 
       for (const p of rawPortfolios) {
-        const pCurrency = p.currency || 'SAR';
+        const pCurrency = String(p.currency || 'SAR');
         const pStocks: DashboardStock[] = [];
         const pBonds: DashboardBond[] = [];
         const pFunds: DashboardFund[] = [];
 
         for (const s of (p.stocks || [])) {
+          const symbol = String(s.symbol || '').trim().toUpperCase();
+          if (!symbol) continue;
+          const name = String(s.name || symbol);
+          const qty = Number(s.qty || 0);
+          const buyPrice = Number(s.buyPrice || 0);
           const sector = s.sector || 'أخرى';
           const exchange = String(s.exchange || '').toUpperCase();
           const isCrypto = sector === 'Cryptocurrency' || exchange === 'CRYPTO';
           const isForex = sector === 'Forex' || exchange === 'FOREX';
           const normalizedSector = isCrypto ? 'Cryptocurrency' : isForex ? 'Forex' : sector;
           const stockClass = isCrypto ? 'crypto' : isForex ? 'forex' : 'stock';
-          const market = getCurrencyForAsset(s, pCurrency, stockClass);
+          const market = getCurrencyForAsset({
+            symbol,
+            name,
+            exchange: s.exchange,
+            currency: s.currency,
+            buyCurrency: s.buyCurrency || undefined,
+          }, pCurrency, stockClass);
           const currency = market.currency;
+          const buyCurrency = String(s.buyCurrency || currency || pCurrency).toUpperCase();
+          const fallbackPrice = s.currentPrice ?? buyPrice;
+          const marketPriceEntry = resolvePriceEntry(livePrices, symbol, s.exchange);
+          const hasStoredCost = Number.isFinite(Number(s.totalCost));
+          const hasStoredValue = Number.isFinite(Number(s.currentValue));
 
-          let livePrice = s.currentPrice ?? s.buyPrice;
-          let liveChangePct = s.changePct ?? 0;
+          let livePrice = marketPriceEntry?.price ?? fallbackPrice;
+          let liveChangePct = Number(s.changePct || 0);
 
           if (isCrypto) {
-            const cryptoKey = Object.keys(crypto).find(k => k.startsWith(s.symbol.replace('-USD', '').replace('-USDT', '')));
-            if (cryptoKey && crypto[cryptoKey]) {
+            const cryptoKey = Object.keys(crypto).find(k => k.startsWith(symbol.replace('-USD', '').replace('-USDT', '')));
+            if (marketPriceEntry?.price == null && cryptoKey && crypto[cryptoKey]) {
               livePrice = crypto[cryptoKey].price;
               liveChangePct = crypto[cryptoKey].changePct;
+            } else if (marketPriceEntry?.price != null) {
+              livePrice = marketPriceEntry.price;
+              liveChangePct = marketPriceEntry.changePct ?? liveChangePct;
             }
           }
 
           if (isForex) {
             const forexPair = forex.find(f =>
-              `${f.baseCurrency}/${f.quoteCurrency}` === s.name ||
-              f.symbol === s.symbol ||
-              `${f.baseCurrency}${f.quoteCurrency}` === s.symbol.replace('=X', '').replace('/','')
+              `${f.baseCurrency}/${f.quoteCurrency}` === name ||
+              f.symbol === symbol ||
+              `${f.baseCurrency}${f.quoteCurrency}` === symbol.replace('=X', '').replace('/','')
             );
-            if (forexPair) {
+            if (marketPriceEntry?.price == null && forexPair) {
               livePrice = forexPair.price;
               liveChangePct = forexPair.changePct;
+            } else if (marketPriceEntry?.price != null) {
+              livePrice = marketPriceEntry.price;
+              liveChangePct = marketPriceEntry.changePct ?? liveChangePct;
             }
           }
 
-          const value = s.qty * livePrice;
-          const cost = s.qty * s.buyPrice;
+          const value = (marketPriceEntry?.price != null || Number.isFinite(Number(s.currentPrice)))
+            ? qty * livePrice
+            : (hasStoredValue ? Number(s.currentValue) : qty * buyPrice);
+          const cost = hasStoredCost ? Number(s.totalCost) : qty * buyPrice;
           const pl = value - cost;
           const plPct = cost > 0 ? (pl / cost) * 100 : 0;
 
           const valueSAR = toSAR(value, currency);
-          const costSAR = toSAR(cost, currency);
+          const costSAR = toSAR(cost, buyCurrency);
 
           const stock: DashboardStock = {
-            ...s,
+            id: String(s.id || `${p.id || 'portfolio'}-${symbol}`),
+            symbol,
+            name,
+            industry: s.industry,
+            qty,
+            buyPrice,
             exchange: market.exchange || s.exchange,
             currency,
             sector: normalizedSector,
             portfolioCurrency: pCurrency,
-            buyCurrency: currency,
+            buyCurrency,
             currentPrice: livePrice,
             currentValue: value,
             profitLoss: pl,
@@ -330,18 +709,40 @@ export function useDashboardData() {
         }
 
         for (const b of (p.bonds || [])) {
-          const market = getCurrencyForAsset(b, pCurrency, 'bond');
+          const symbol = String(b.symbol || '').trim().toUpperCase();
+          if (!symbol) continue;
+          const name = String(b.name || symbol);
+          const qty = Number(b.qty || 0);
+          const buyPrice = Number(b.buyPrice || 0);
+          const faceValue = Number(b.faceValue || 0);
+          const market = getCurrencyForAsset({
+            symbol,
+            name,
+            exchange: b.exchange,
+            currency: b.currency,
+          }, pCurrency, 'bond');
           const currency = market.currency;
-          const value = b.qty * b.faceValue * ((b.currentPrice ?? b.buyPrice) / 100);
-          const cost = b.qty * b.faceValue * (b.buyPrice / 100);
+          const marketPrice = resolvePriceEntry(livePrices, symbol, b.exchange)?.price;
+          const currentPrice = marketPrice ?? b.currentPrice ?? buyPrice;
+          const value = qty * faceValue * (currentPrice / 100);
+          const cost = qty * faceValue * (buyPrice / 100);
           const valueSAR = toSAR(value, currency);
           const costSAR = toSAR(cost, currency);
 
           const bond: DashboardBond = {
-            ...b,
+            id: String(b.id || `${p.id || 'portfolio'}-${symbol}`),
+            symbol,
+            name,
+            type: String(b.type || 'bond'),
+            faceValue,
+            couponRate: b.couponRate,
+            maturityDate: b.maturityDate,
+            qty,
+            buyPrice,
             exchange: market.exchange || b.exchange,
             currency,
             portfolioCurrency: pCurrency,
+            currentPrice,
             valueSAR, costSAR, plSAR: valueSAR - costSAR,
           };
           pBonds.push(bond);
@@ -351,24 +752,42 @@ export function useDashboardData() {
         }
 
         for (const f of (p.funds || [])) {
-          const fundType = f.fundType || '';
+          const symbol = String(f.symbol || '').trim().toUpperCase();
+          const name = String(f.name || symbol || 'Fund');
+          const units = Number(f.units || 0);
+          const buyPrice = Number(f.buyPrice || 0);
+          const fundType = String(f.fundType || '');
           const fundClass = fundType === 'commodities' ? 'commodity' : 'fund';
-          const market = getCurrencyForAsset(f, pCurrency, fundClass);
+          const market = getCurrencyForAsset({
+            symbol,
+            name,
+            exchange: f.exchange,
+            currency: f.currency,
+          }, pCurrency, fundClass);
           const currency = market.currency;
           let livePrice: number | undefined;
+          const marketPrice = symbol ? resolvePriceEntry(livePrices, symbol, f.exchange)?.price : undefined;
 
-          if (f.symbol && ticker[f.symbol]) {
-            livePrice = ticker[f.symbol].price;
+          if (marketPrice != null) {
+            livePrice = marketPrice;
+          } else if (symbol && ticker[symbol]) {
+            livePrice = ticker[symbol].price;
           }
 
-          const price = livePrice ?? f.currentPrice ?? f.buyPrice;
-          const value = f.units * price;
-          const cost = f.units * f.buyPrice;
+          const price = livePrice ?? f.currentPrice ?? buyPrice;
+          const value = units * price;
+          const cost = units * buyPrice;
           const valueSAR = toSAR(value, currency);
           const costSAR = toSAR(cost, currency);
 
           const fund: DashboardFund = {
-            ...f,
+            id: String(f.id || `${p.id || 'portfolio'}-${symbol || name}`),
+            symbol: symbol || undefined,
+            name,
+            fundType,
+            units,
+            buyPrice,
+            ytdReturn: f.ytdReturn,
             exchange: market.exchange || f.exchange,
             currency,
             portfolioCurrency: pCurrency,
@@ -393,7 +812,12 @@ export function useDashboardData() {
           + pFunds.reduce((s, f) => s + f.valueSAR, 0);
 
         portfolios.push({
-          ...p,
+          id: String(p.id || `portfolio-${String(p.name || 'default')}`),
+          name: String(p.name || 'محفظة'),
+          description: typeof p.description === 'string' ? p.description : undefined,
+          type: String(p.type || 'mixed'),
+          currency: pCurrency,
+          isActive: Boolean(p.isActive),
           totalValueSAR,
           stocks: pStocks,
           bonds: pBonds,
@@ -406,10 +830,13 @@ export function useDashboardData() {
       }
 
       const totalPortfolioValue = stockTotalSAR + bondTotalSAR + fundTotalSAR + cryptoTotalSAR + forexTotalSAR + commodityTotalSAR;
-      const totalPortfolioCost =
+      const computedPortfolioCost =
         stockCostSAR + bondCostSAR + fundCostSAR + cryptoCostSAR + forexCostSAR + commodityCostSAR;
+      const hasManualCapital = typeof manualInvestedCapitalSar === 'number' && Number.isFinite(manualInvestedCapitalSar) && manualInvestedCapitalSar > 0;
+      const totalPortfolioCost = hasManualCapital ? manualInvestedCapitalSar! : computedPortfolioCost;
       const totalProfitLoss = totalPortfolioValue - totalPortfolioCost;
       const totalProfitLossPct = totalPortfolioCost > 0 ? (totalProfitLoss / totalPortfolioCost) * 100 : 0;
+      const capitalDifferenceSar = hasManualCapital ? (manualInvestedCapitalSar! - computedPortfolioCost) : null;
 
       const assetCategories: AssetCategory[] = [
         { label: 'الأسهم', valueSAR: stockTotalSAR, costSAR: stockCostSAR, plSAR: stockTotalSAR - stockCostSAR, count: allStocks.filter(s => s.sector !== 'Cryptocurrency' && s.sector !== 'Forex').length },
@@ -425,7 +852,14 @@ export function useDashboardData() {
       setData({
         portfolios, stocks: allStocks, bonds: allBonds, funds: allFunds,
         ticker, crypto, forex, liveFunds,
-        totalPortfolioValue, totalPortfolioCost, totalProfitLoss, totalProfitLossPct,
+        totalPortfolioValue,
+        totalPortfolioCost,
+        computedPortfolioCost,
+        totalProfitLoss,
+        totalProfitLossPct,
+        manualInvestedCapitalSar,
+        capitalDifferenceSar,
+        isManualCapitalApplied: hasManualCapital,
         totalStocks: allStocks.length, totalBonds: allBonds.length, totalFunds: allFunds.length,
         isAuthenticated: true,
         assetCategories,

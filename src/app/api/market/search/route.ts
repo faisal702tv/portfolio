@@ -29,27 +29,56 @@ function normalizeType(raw: string | null): AssetType {
 
 function searchLocal(query: string, shariaDb: Record<string, string[][]>): SearchResult[] {
   const q = query.toLowerCase();
-  const results: SearchResult[] = [];
+  const scored: Array<{ score: number; rank: number; result: SearchResult }> = [];
+  let rank = 0;
 
-  // Search LOCAL_SYMBOL_DB (15,137 symbols)
+  // Search LOCAL_SYMBOL_DB (15,137 symbols) with direct-match priority
   for (const [sym, info] of Object.entries(LOCAL_SYMBOL_DB)) {
-    if (results.length >= 15) break;
-    if (sym.toLowerCase().includes(q) || (info.n || '').toLowerCase().includes(q)) {
-      // Look up sharia status
-      const sharia = lookupSharia(sym, shariaDb);
-      results.push({
+    const symbolLower = sym.toLowerCase();
+    const name = info.n || sym;
+    const nameLower = name.toLowerCase();
+
+    const exactSymbol = symbolLower === q;
+    const startsWithSymbol = symbolLower.startsWith(q);
+    const exactName = nameLower === q;
+    const startsWithName = nameLower.startsWith(q);
+    const includesSymbol = symbolLower.includes(q);
+    const includesName = nameLower.includes(q);
+
+    if (!includesSymbol && !includesName) continue;
+
+    let score = 6;
+    if (exactSymbol) score = 0;
+    else if (startsWithSymbol) score = 1;
+    else if (exactName) score = 2;
+    else if (startsWithName) score = 3;
+    else if (includesSymbol) score = 4;
+    else if (includesName) score = 5;
+
+    const sharia = lookupSharia(sym, shariaDb);
+    scored.push({
+      score,
+      rank: rank++,
+      result: {
         symbol: sym,
-        name: info.n || sym,
+        name,
         exchange: info.e || '',
         currency: detectCurrencyFromMarket(info.mkt),
         type: info.c || 'Equity',
         source: 'قاعدة البيانات المحلية',
         sector: info.s || '',
         ...sharia,
-      });
-    }
+      },
+    });
   }
-  return results;
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    if (a.result.symbol.length !== b.result.symbol.length) return a.result.symbol.length - b.result.symbol.length;
+    return a.rank - b.rank;
+  });
+
+  return scored.slice(0, 30).map((entry) => entry.result);
 }
 
 function lookupSharia(symbol: string, shariaDb: Record<string, string[][]>): {

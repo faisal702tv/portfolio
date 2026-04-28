@@ -44,6 +44,7 @@ import { convertCurrency, fmtN } from '@/lib/helpers';
 import { calcPurificationAmount, fetchPurificationMetrics, ZERO_PURIFICATION_METRICS } from '@/lib/purification';
 import { SymbolLookup } from '@/components/forms/SymbolLookup';
 import { Plus, RefreshCw, Search, Trash2, Edit2, ArrowDownRight, ArrowRightLeft } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { ShariaBadgesPanel, ShariaInlineBadge } from '@/components/ui/sharia-badges';
 import { StockEditDialog, StockMoveDialog, StockDeleteDialog } from './StockDialogs';
 
@@ -103,6 +104,10 @@ type PriceEntry = {
   averageVolume10Day?: number;
   shortRatio?: number;
   shortPercentOfFloat?: number;
+  sharesShort?: number;
+  sharesOutstanding?: number;
+  floatShares?: number;
+  shortDataSource?: string;
 };
 
 type PriceMap = Record<string, PriceEntry>;
@@ -189,6 +194,14 @@ function getPriceForSymbol(prices: PriceMap, symbol: string, exchange?: string) 
   return resolvePriceEntry(prices, symbol, exchange)?.price ?? null;
 }
 
+function formatSharesCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+  return value.toLocaleString();
+}
+
 const todayStr = () => new Date().toISOString().split('T')[0];
 
 const precise = (num: number) => Number(num.toFixed(4));
@@ -257,6 +270,9 @@ export default function StocksPage() {
   const isReadOnly = portfolioFilter === 'all';
 
   const allStocks = useMemo(() => activeSnapshots.flatMap((s) => s.stocks), [activeSnapshots]);
+  const allBonds = useMemo(() => activeSnapshots.flatMap((s) => s.bonds || []), [activeSnapshots]);
+  const allFunds = useMemo(() => activeSnapshots.flatMap((s) => s.funds || []), [activeSnapshots]);
+  const [activeTab, setActiveTab] = useState<'stocks' | 'bonds' | 'funds'>('stocks');
   const assetPortfolioMap = useMemo(() => {
     const map = new Map<string, string>();
     activeSnapshots.forEach(s => { s.stocks.forEach(st => map.set(st.id, s.portfolioName || '')); });
@@ -374,7 +390,6 @@ export default function StocksPage() {
 
   const filtered = useMemo(() => {
     let result = allStocks.filter((s) => {
-      if (s.exchange === 'CRYPTO' || s.exchange === 'FOREX') return false;
       if (!search) return true;
       const q = search.toLowerCase();
       return s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
@@ -744,10 +759,19 @@ export default function StocksPage() {
         <TopBar title="📊 الأسهم (بيانات حقيقية)" />
 
         <main className="space-y-6 p-6">
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-5">
             <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">عدد الأسهم</p><p className="text-2xl font-bold">{filtered.length}</p></CardContent></Card>
             <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">إجمالي التكلفة</p><p className="text-2xl font-bold">{fmtN(totals.cost)} <span className="text-sm font-normal text-muted-foreground">{displayCurrency}</span></p></CardContent></Card>
             <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">القيمة الحالية</p><p className="text-2xl font-bold">{fmtN(totals.value)} <span className="text-sm font-normal text-muted-foreground">{displayCurrency}</span></p></CardContent></Card>
+            <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">السندات/الصكوك</p><p className="text-2xl font-bold">{allBonds.length}</p></CardContent></Card>
+            <Card><CardContent className="p-4"><p className="text-xs text-muted-foreground">الصناديق/السلع</p><p className="text-2xl font-bold">{allFunds.length}</p></CardContent></Card>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex gap-2 border-b pb-2">
+            <Button variant={activeTab === 'stocks' ? 'default' : 'ghost'} size="sm" onClick={() => setActiveTab('stocks')}>📊 الأسهم ({filtered.length})</Button>
+            {allBonds.length > 0 && <Button variant={activeTab === 'bonds' ? 'default' : 'ghost'} size="sm" onClick={() => setActiveTab('bonds')}>📜 السندات/الصكوك ({allBonds.length})</Button>}
+            {allFunds.length > 0 && <Button variant={activeTab === 'funds' ? 'default' : 'ghost'} size="sm" onClick={() => setActiveTab('funds')}>🏦 الصناديق/السلع ({allFunds.length})</Button>}
           </div>
 
           <Card>
@@ -895,6 +919,7 @@ export default function StocksPage() {
           </Card>
 
           {/* Stock List */}
+          {activeTab === 'stocks' && (
           <Card>
             <CardHeader><CardTitle>قائمة الأسهم</CardTitle></CardHeader>
             <CardContent>
@@ -912,6 +937,16 @@ export default function StocksPage() {
                   const avgVol = liveData?.averageVolume;
                   const shortRatio = liveData?.shortRatio;
                   const shortPctFloat = liveData?.shortPercentOfFloat;
+                  const shortDataSource = liveData?.shortDataSource || null;
+                  const sharesShortRaw = liveData?.sharesShort ?? null;
+                  const floatShares = liveData?.floatShares ?? null;
+                  const sharesOutstanding = liveData?.sharesOutstanding ?? null;
+                  const sharesShort = sharesShortRaw && sharesShortRaw > 0
+                    ? sharesShortRaw
+                    : (shortPctFloat != null && shortPctFloat > 0 && floatShares != null && floatShares > 0
+                      ? (shortPctFloat / 100) * floatShares
+                      : null);
+                  const sharesBuyToCover = sharesShort;
                   const cost = stock.qty * stock.buyPrice;
                   const value = stock.qty * live;
                   const pl = value - cost;
@@ -968,10 +1003,40 @@ export default function StocksPage() {
                         )}
                       </div>
                       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/15 px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold" dir="ltr">
-                          <span className="text-red-600">أدنى 52 أسبوع: {live52l?.toFixed(2) ?? '—'}</span>
-                          <span className="text-muted-foreground">|</span>
-                          <span className="text-green-600">أعلى 52 أسبوع: {live52h?.toFixed(2) ?? '—'}</span>
+                        <div className="flex min-w-[280px] flex-1 flex-wrap items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold" dir="ltr">
+                            <span className="text-red-600">أدنى 52 أسبوع: {live52l?.toFixed(2) ?? '—'}</span>
+                            <span className="text-muted-foreground">|</span>
+                            <span className="text-green-600">أعلى 52 أسبوع: {live52h?.toFixed(2) ?? '—'}</span>
+                          </div>
+                          {(live52h != null || live52l != null) && (
+                            <div className="min-w-[180px] flex-1" dir="ltr">
+                              <div className="relative h-2.5 overflow-hidden rounded-full bg-muted">
+                                <div className="absolute inset-y-0 left-0 w-full bg-gradient-to-r from-red-500 via-amber-400 to-green-500 opacity-40" />
+                                {pctPos !== null && (
+                                  <div
+                                    className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow-lg transition-[left] duration-500"
+                                    style={{ left: `calc(${pctPos}% - 8px)` }}
+                                  />
+                                )}
+                              </div>
+                              {pctPos !== null && (
+                                <div className="relative mt-1 h-4">
+                                  <span
+                                    className="absolute -translate-x-1/2 text-[10px] font-bold text-primary tabular-nums"
+                                    style={{ left: `${pctPos}%` }}
+                                  >
+                                    {live.toFixed(2)}
+                                  </span>
+                                </div>
+                              )}
+                              {pctPos !== null && (
+                                <p className="mt-1 text-center text-[10px] text-muted-foreground" dir="rtl">
+                                  {pctPos > 70 ? 'قريب من الأعلى' : pctPos < 30 ? 'قريب من الأدنى' : 'في المنتصف'}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="flex flex-wrap items-center gap-2" dir="rtl">
                           <Badge variant="secondary" className="text-[10px] bg-muted/70">
@@ -998,68 +1063,147 @@ export default function StocksPage() {
                           )}
                         </div>
                       </div>
-                      {(live52h != null || live52l != null) && (
-                        <div className="w-full rounded-lg border bg-muted/10 px-3 py-2" dir="ltr">
-                          <div className="relative h-2.5 overflow-hidden rounded-full bg-muted">
-                            <div className="absolute inset-y-0 left-0 w-full bg-gradient-to-r from-red-500 via-amber-400 to-green-500 opacity-40" />
-                            {pctPos !== null && (
-                              <div
-                                className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow-lg transition-[left] duration-500"
-                                style={{ left: `calc(${pctPos}% - 8px)` }}
-                              />
-                            )}
-                          </div>
-                          {pctPos !== null && (
-                            <p className="mt-1 text-center text-[10px] text-muted-foreground" dir="rtl">
-                              {pctPos > 70 ? 'قريب من الأعلى' : pctPos < 30 ? 'قريب من الأدنى' : 'في المنتصف'}
-                            </p>
-                          )}
-                        </div>
-                      )}
                       {/* Volume & Short Interest Bar */}
-                      {(vol != null || shortPctFloat != null) && (
-                        <div className="flex flex-wrap items-center gap-4 text-[11px]" dir="rtl">
-                          {vol != null && (
-                            <div className="flex items-center gap-2 min-w-[200px] flex-1">
-                              <span className="text-muted-foreground whitespace-nowrap">حجم التداول:</span>
-                              <span className="font-bold tabular-nums">{vol >= 1e6 ? `${(vol / 1e6).toFixed(1)}M` : vol >= 1e3 ? `${(vol / 1e3).toFixed(0)}K` : vol.toLocaleString()}</span>
-                              {avgVol != null && avgVol > 0 && (() => {
-                                const volRatio = vol / avgVol;
-                                const barPct = Math.min(100, volRatio * 50);
-                                const isHigh = volRatio > 1.5;
-                                const isLow = volRatio < 0.5;
-                                return (
-                                  <div className="flex items-center gap-1.5 flex-1">
-                                    <div className="relative h-2 flex-1 max-w-[160px] rounded-full bg-muted overflow-hidden">
-                                      <div className={`absolute inset-y-0 right-0 rounded-full transition-all ${isHigh ? 'bg-green-500' : isLow ? 'bg-red-400' : 'bg-blue-400'}`} style={{ width: `${barPct}%` }} />
-                                      <div className="absolute inset-y-0 right-1/2 w-px bg-muted-foreground/30" />
-                                    </div>
-                                    <span className={`text-[10px] font-medium ${isHigh ? 'text-green-600' : isLow ? 'text-red-500' : 'text-muted-foreground'}`}>
-                                      {volRatio.toFixed(1)}x {isHigh ? '↑' : isLow ? '↓' : ''}
-                                    </span>
-                                    <span className="text-[10px] text-muted-foreground">(متوسط: {avgVol >= 1e6 ? `${(avgVol / 1e6).toFixed(1)}M` : `${(avgVol / 1e3).toFixed(0)}K`})</span>
+                      <div className="flex flex-wrap items-center gap-4 text-[11px]" dir="rtl">
+                        {vol != null && (
+                          <div className="flex items-center gap-2 min-w-[200px] flex-1">
+                            <span className="text-muted-foreground whitespace-nowrap">حجم التداول:</span>
+                            <span className="font-bold tabular-nums">{vol >= 1e6 ? `${(vol / 1e6).toFixed(1)}M` : vol >= 1e3 ? `${(vol / 1e3).toFixed(0)}K` : vol.toLocaleString()}</span>
+                            {avgVol != null && avgVol > 0 && (() => {
+                              const volRatio = vol / avgVol;
+                              const barPct = Math.min(100, volRatio * 50);
+                              const isHigh = volRatio > 1.5;
+                              const isLow = volRatio < 0.5;
+                              return (
+                                <div className="flex items-center gap-1.5 flex-1">
+                                  <div className="relative h-2 flex-1 max-w-[160px] rounded-full bg-muted overflow-hidden">
+                                    <div className={`absolute inset-y-0 right-0 rounded-full transition-all ${isHigh ? 'bg-green-500' : isLow ? 'bg-red-400' : 'bg-blue-400'}`} style={{ width: `${barPct}%` }} />
+                                    <div className="absolute inset-y-0 right-1/2 w-px bg-muted-foreground/30" />
                                   </div>
-                                );
-                              })()}
-                            </div>
+                                  <span className={`text-[10px] font-medium ${isHigh ? 'text-green-600' : isLow ? 'text-red-500' : 'text-muted-foreground'}`}>
+                                    {volRatio.toFixed(1)}x {isHigh ? '↑' : isLow ? '↓' : ''}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground">(متوسط: {avgVol >= 1e6 ? `${(avgVol / 1e6).toFixed(1)}M` : `${(avgVol / 1e3).toFixed(0)}K`})</span>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-muted-foreground">البيع على المكشوف (من المصدر):</span>
+                          {shortPctFloat != null ? (
+                            <Badge variant="outline" className={`text-[10px] ${shortPctFloat >= 20 ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30' : shortPctFloat >= 10 ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30' : 'border-muted'}`}>
+                              {shortPctFloat.toFixed(2)}%
+                            </Badge>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground">غير متاح</span>
                           )}
-                          {shortPctFloat != null && shortPctFloat > 0 && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-muted-foreground">بيع مكشوف:</span>
-                              <Badge variant="outline" className={`text-[10px] ${shortPctFloat >= 20 ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30' : shortPctFloat >= 10 ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30' : 'border-muted'}`}>
-                                {shortPctFloat.toFixed(1)}%
-                              </Badge>
-                              {shortRatio != null && <span className="text-[10px] text-muted-foreground">(نسبة: {shortRatio.toFixed(1)})</span>}
-                            </div>
+                          <span className="text-muted-foreground">|</span>
+                          <span className="text-muted-foreground">Days to Cover:</span>
+                          <span className="font-extrabold tabular-nums">{shortRatio != null ? shortRatio.toFixed(2) : '—'}</span>
+                          <span className="text-muted-foreground">|</span>
+                          <span className="text-muted-foreground">عدد أسهم البيع على المكشوف:</span>
+                          <span className="font-extrabold tabular-nums">{sharesShort != null ? formatSharesCount(sharesShort) : 'غير متاح'}</span>
+                          <span className="text-muted-foreground">|</span>
+                          <span className="text-muted-foreground">عدد أسهم الشراء لتغطية المراكز:</span>
+                          <span className="font-extrabold tabular-nums">{sharesBuyToCover != null ? formatSharesCount(sharesBuyToCover) : 'غير متاح'}</span>
+                          {sharesOutstanding != null && sharesOutstanding > 0 && (
+                            <>
+                              <span className="text-muted-foreground">|</span>
+                              <span className="text-muted-foreground">إجمالي الأسهم القائمة:</span>
+                              <span className="font-extrabold tabular-nums">{formatSharesCount(sharesOutstanding)}</span>
+                            </>
                           )}
+                          <span className="text-muted-foreground">|</span>
+                          <span className="text-muted-foreground">المصدر:</span>
+                          <Badge variant="secondary" className="text-[10px]">
+                            {shortDataSource || 'غير متاح'}
+                          </Badge>
                         </div>
-                      )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </CardContent>
           </Card>
+          )}
+
+          {/* Bonds/Sukuk Tab */}
+          {activeTab === 'bonds' && allBonds.length > 0 && (
+          <Card>
+            <CardHeader><CardTitle>📜 السندات والصكوك</CardTitle></CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {allBonds.map((bond) => {
+                  const live = bond.currentPrice ?? bond.buyPrice;
+                  const pl = (live - bond.buyPrice) * bond.qty;
+                  const plPct = bond.buyPrice ? ((live - bond.buyPrice) / bond.buyPrice) * 100 : 0;
+                  return (
+                    <div key={bond.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm">{bond.symbol}</span>
+                          <span className="text-xs text-muted-foreground truncate">{bond.name}</span>
+                          {bond.type && <Badge variant="outline" className="text-[10px]">{bond.type === 'sukuk' ? 'صكوك' : bond.type}</Badge>}
+                        </div>
+                        <div className="flex gap-3 mt-1 text-xs text-muted-foreground">
+                          <span>الكمية: {bond.qty}</span>
+                          <span>القيمة الاسمية: {bond.faceValue}</span>
+                          {bond.couponRate != null && <span>العائد: {bond.couponRate}%</span>}
+                          {bond.maturityDate && <span>الاستحقاق: {bond.maturityDate?.split('T')[0]}</span>}
+                        </div>
+                      </div>
+                      <div className="text-left shrink-0">
+                        <p className="font-bold text-sm">{live.toFixed(2)}</p>
+                        <p className={cn('text-xs font-semibold', pl >= 0 ? 'text-green-600' : 'text-red-600')}>
+                          {pl >= 0 ? '+' : ''}{pl.toFixed(2)} ({plPct >= 0 ? '+' : ''}{plPct.toFixed(2)}%)
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+          )}
+
+          {/* Funds/Commodities Tab */}
+          {activeTab === 'funds' && allFunds.length > 0 && (
+          <Card>
+            <CardHeader><CardTitle>🏦 الصناديق والسلع</CardTitle></CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {allFunds.map((fund) => {
+                  const live = fund.currentPrice ?? fund.buyPrice;
+                  const pl = (live - fund.buyPrice) * fund.units;
+                  const plPct = fund.buyPrice ? ((live - fund.buyPrice) / fund.buyPrice) * 100 : 0;
+                  return (
+                    <div key={fund.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm">{fund.symbol}</span>
+                          <span className="text-xs text-muted-foreground truncate">{fund.name}</span>
+                          {fund.fundType && <Badge variant="outline" className="text-[10px]">{fund.fundType === 'commodities' ? 'سلع' : fund.fundType}</Badge>}
+                        </div>
+                        <div className="flex gap-3 mt-1 text-xs text-muted-foreground">
+                          <span>الوحدات: {fund.units}</span>
+                          <span>سعر الشراء: {fund.buyPrice}</span>
+                        </div>
+                      </div>
+                      <div className="text-left shrink-0">
+                        <p className="font-bold text-sm">{live.toFixed(2)}</p>
+                        <p className={cn('text-xs font-semibold', pl >= 0 ? 'text-green-600' : 'text-red-600')}>
+                          {pl >= 0 ? '+' : ''}{pl.toFixed(2)} ({plPct >= 0 ? '+' : ''}{plPct.toFixed(2)}%)
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+          )}
         </main>
       </div>
 

@@ -3,6 +3,11 @@ import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { createWatchlistSchema, updateWatchlistSchema, addWatchlistItemSchema } from '@/lib/validations';
 
+function isDbUnavailable(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  return /connectionfailed|unable to open connection|p1000|p1001|p1017|database/i.test(text.toLowerCase());
+}
+
 async function getUserFromRequest(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
@@ -31,6 +36,13 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('Get watchlists error:', error);
+    if (isDbUnavailable(error)) {
+      return NextResponse.json({
+        watchlists: [],
+        fallback: true,
+        reason: 'db_unavailable',
+      });
+    }
     return NextResponse.json({ error: 'حدث خطأ في الخادم' }, { status: 500 });
   }
 }

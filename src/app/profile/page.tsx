@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { useAuth } from '@/hooks/use-auth';
@@ -75,6 +75,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { ThemeSelector } from '@/components/ui/theme-selector';
 import { AI_PROVIDERS as ALL_AI_PROVIDERS } from '@/lib/ai-providers';
+import { parseActualInvestedCapitalSar } from '@/lib/profile-finance';
 
 // GCC Countries + Egypt + USA
 const COUNTRIES = [
@@ -142,8 +143,16 @@ const NET_WORTH_RANGES = [
   { value: '10m+', label: 'أكثر من 10,000,000' },
 ];
 
+type ExternalApiCategoryId =
+  | 'stocks_markets'
+  | 'forex_currency'
+  | 'crypto_data'
+  | 'fundamentals_macro'
+  | 'news_sentiment';
+
 type ExternalApiProvider = {
   id: string;
+  categoryId: ExternalApiCategoryId;
   nameAr: string;
   description: string;
   freeRequests: string;
@@ -151,11 +160,51 @@ type ExternalApiProvider = {
   color: string;
   placeholder: string;
   url: string;
+  sourceLabel?: string;
 };
+
+const API_PROVIDER_CATEGORIES: Array<{
+  id: ExternalApiCategoryId;
+  nameAr: string;
+  description: string;
+  icon: string;
+}> = [
+  {
+    id: 'stocks_markets',
+    nameAr: 'الأسهم والأسواق والمؤشرات',
+    description: 'بيانات الأسعار اللحظية والتاريخية للأسهم، المؤشرات، الصناديق وعمق السوق.',
+    icon: '📈',
+  },
+  {
+    id: 'fundamentals_macro',
+    nameAr: 'البيانات الأساسية والاقتصاد الكلي',
+    description: 'القوائم المالية، الإفصاحات الرسمية، والبيانات الاقتصادية العالمية.',
+    icon: '🏛️',
+  },
+  {
+    id: 'forex_currency',
+    nameAr: 'الفوركس والعملات والتحويل',
+    description: 'أسعار صرف العملات الفورية والتاريخية والتحويل بين العملات.',
+    icon: '💱',
+  },
+  {
+    id: 'crypto_data',
+    nameAr: 'العملات المشفرة',
+    description: 'أسعار وأحجام وسيولة الأصول المشفرة من منصات ومصادر متعددة.',
+    icon: '🪙',
+  },
+  {
+    id: 'news_sentiment',
+    nameAr: 'الأخبار والتحليلات والمعنويات',
+    description: 'أخبار السوق مع وسم الرموز المالية وتحليل المعنويات.',
+    icon: '📰',
+  },
+];
 
 const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   {
     id: 'alpha_vantage',
+    categoryId: 'stocks_markets',
     nameAr: 'Alpha Vantage',
     description: 'أسعار الأسهم والمؤشرات الفنية',
     freeRequests: '500 طلب/يوم',
@@ -166,6 +215,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'financial_modeling_prep',
+    categoryId: 'fundamentals_macro',
     nameAr: 'Financial Modeling Prep',
     description: 'بيانات مالية شاملة وبيانات الشورت',
     freeRequests: '250 طلب/يوم',
@@ -176,6 +226,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'twelve_data',
+    categoryId: 'stocks_markets',
     nameAr: 'Twelve Data',
     description: 'بيانات الأسعار الحية والتاريخية',
     freeRequests: '800 طلب/يوم',
@@ -186,6 +237,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'polygon',
+    categoryId: 'stocks_markets',
     nameAr: 'Polygon.io',
     description: 'بيانات السوق الأمريكي الشاملة',
     freeRequests: 'محدود مجاني',
@@ -196,6 +248,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'news_api',
+    categoryId: 'news_sentiment',
     nameAr: 'News API',
     description: 'أخبار مالية من مئات المصادر',
     freeRequests: '100 طلب/يوم',
@@ -206,6 +259,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'eodhd',
+    categoryId: 'stocks_markets',
     nameAr: 'EODHD',
     description: 'بيانات تاريخية وأساسية لأكثر من 70 بورصة عالمية',
     freeRequests: '20 طلب/يوم',
@@ -216,6 +270,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'finnhub',
+    categoryId: 'stocks_markets',
     nameAr: 'Finnhub',
     description: 'بيانات لحظية وأخبار وتحليل مالي شامل',
     freeRequests: '60 طلب/دقيقة',
@@ -226,6 +281,7 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
   },
   {
     id: 'massive',
+    categoryId: 'stocks_markets',
     nameAr: 'Massive',
     description: 'أسهم وفوركس ومؤشرات وعقود آجلة بواجهات سريعة',
     freeRequests: 'مجاني محدود',
@@ -233,6 +289,306 @@ const MARKET_DATA_PROVIDERS: ExternalApiProvider[] = [
     color: 'bg-violet-600',
     placeholder: 'أدخل مفتاح Massive API...',
     url: 'https://massive.com/pricing',
+  },
+  {
+    id: 'marketstack',
+    categoryId: 'stocks_markets',
+    nameAr: 'Marketstack',
+    description: 'بيانات لحظية وتاريخية للأسهم العالمية بصيغة REST',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '📊',
+    color: 'bg-indigo-500',
+    placeholder: 'أدخل مفتاح Marketstack...',
+    url: 'https://marketstack.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'alpaca_market_data',
+    categoryId: 'stocks_markets',
+    nameAr: 'Alpaca Market Data',
+    description: 'بيانات US Equities/ETF لحظية وتاريخية',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🦙',
+    color: 'bg-emerald-600',
+    placeholder: 'أدخل مفتاح Alpaca...',
+    url: 'https://alpaca.markets/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'iex_cloud',
+    categoryId: 'stocks_markets',
+    nameAr: 'IEX Cloud',
+    description: 'بيانات سوقية للأسهم والمؤشرات بشكل احترافي',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🏢',
+    color: 'bg-slate-600',
+    placeholder: 'أدخل مفتاح IEX Cloud...',
+    url: 'https://iexcloud.io/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'stockdata_org',
+    categoryId: 'stocks_markets',
+    nameAr: 'StockData.org',
+    description: 'أسعار لحظية وتاريخية + أخبار ومعنويات السوق',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '📉',
+    color: 'bg-sky-600',
+    placeholder: 'أدخل مفتاح StockData.org...',
+    url: 'https://www.stockdata.org/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'tradier',
+    categoryId: 'stocks_markets',
+    nameAr: 'Tradier',
+    description: 'بيانات أسهم/خيارات أمريكية (لحظية وتاريخية)',
+    freeRequests: 'OAuth / خطة مجانية متاحة',
+    icon: '🧾',
+    color: 'bg-zinc-600',
+    placeholder: 'أدخل مفتاح/توكن Tradier...',
+    url: 'https://developer.tradier.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'yahoo_finance_api',
+    categoryId: 'stocks_markets',
+    nameAr: 'Yahoo Finance API',
+    description: 'أسعار أسهم وكريبتو وعملات بزمن منخفض',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🟣',
+    color: 'bg-fuchsia-600',
+    placeholder: 'أدخل مفتاح Yahoo Finance API...',
+    url: 'https://www.yahoofinanceapi.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'fred',
+    categoryId: 'fundamentals_macro',
+    nameAr: 'FRED',
+    description: 'بيانات اقتصادية رسمية من الاحتياطي الفيدرالي (St. Louis)',
+    freeRequests: 'API Key مجاني',
+    icon: '🏦',
+    color: 'bg-blue-700',
+    placeholder: 'أدخل مفتاح FRED...',
+    url: 'https://fred.stlouisfed.org/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'sec_edgar',
+    categoryId: 'fundamentals_macro',
+    nameAr: 'SEC EDGAR Data',
+    description: 'وصول مباشر لتقارير الشركات الأمريكية الرسمية',
+    freeRequests: 'مجاني بدون مفتاح',
+    icon: '📄',
+    color: 'bg-gray-700',
+    placeholder: 'لا يتطلب مفتاح (يمكن تركه فارغًا)',
+    url: 'https://www.sec.gov/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'openfigi',
+    categoryId: 'fundamentals_macro',
+    nameAr: 'OpenFIGI',
+    description: 'ترميز وتعريف الأدوات المالية (أسهم، مؤشرات، عقود)',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🏷️',
+    color: 'bg-amber-700',
+    placeholder: 'أدخل مفتاح OpenFIGI...',
+    url: 'https://www.openfigi.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'econdb',
+    categoryId: 'fundamentals_macro',
+    nameAr: 'Econdb',
+    description: 'بيانات اقتصادية كلية عالمية',
+    freeRequests: 'مجاني',
+    icon: '🌐',
+    color: 'bg-teal-700',
+    placeholder: 'أدخل مفتاح Econdb (إن وجد)...',
+    url: 'https://www.econdb.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'exchangerate_host',
+    categoryId: 'forex_currency',
+    nameAr: 'Exchangerate.host',
+    description: 'أسعار صرف فورية وتاريخية للعملات والفوركس',
+    freeRequests: 'مجاني بدون مفتاح',
+    icon: '💱',
+    color: 'bg-green-700',
+    placeholder: 'لا يتطلب مفتاح (اختياري)',
+    url: 'https://exchangerate.host/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'exchange_rate_api',
+    categoryId: 'forex_currency',
+    nameAr: 'ExchangeRate-API',
+    description: 'تحويل العملات وأسعار صرف محدثة',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🔄',
+    color: 'bg-lime-600',
+    placeholder: 'أدخل مفتاح ExchangeRate-API...',
+    url: 'https://www.exchangerate-api.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'currencylayer',
+    categoryId: 'forex_currency',
+    nameAr: 'Currencylayer',
+    description: 'API لتحويل العملات وأسعار الصرف',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '💵',
+    color: 'bg-emerald-700',
+    placeholder: 'أدخل مفتاح Currencylayer...',
+    url: 'https://currencylayer.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'fixer',
+    categoryId: 'forex_currency',
+    nameAr: 'Fixer',
+    description: 'أسعار صرف لحظية وتاريخية للفوركس',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '💶',
+    color: 'bg-cyan-700',
+    placeholder: 'أدخل مفتاح Fixer...',
+    url: 'https://fixer.io/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'one_forge',
+    categoryId: 'forex_currency',
+    nameAr: '1Forge',
+    description: 'بيانات سوق الفوركس للأزواج الرئيسية',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '📉',
+    color: 'bg-blue-800',
+    placeholder: 'أدخل مفتاح 1Forge...',
+    url: 'https://1forge.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'currencyfreaks',
+    categoryId: 'forex_currency',
+    nameAr: 'CurrencyFreaks',
+    description: 'أسعار صرف حالية وتاريخية (خطة شهرية مجانية)',
+    freeRequests: '1K طلب/شهر (خطة مجانية)',
+    icon: '🪙',
+    color: 'bg-violet-700',
+    placeholder: 'أدخل مفتاح CurrencyFreaks...',
+    url: 'https://currencyfreaks.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'coinapi',
+    categoryId: 'crypto_data',
+    nameAr: 'CoinAPI',
+    description: 'تجميع أسعار الأصول المشفرة من بورصات متعددة',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🧮',
+    color: 'bg-orange-700',
+    placeholder: 'أدخل مفتاح CoinAPI...',
+    url: 'https://docs.coinapi.io/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'coingecko',
+    categoryId: 'crypto_data',
+    nameAr: 'CoinGecko',
+    description: 'أسعار، ماركت كاب، وبيانات أصول مشفرة',
+    freeRequests: 'مجاني / خطة Pro اختيارية',
+    icon: '🦎',
+    color: 'bg-emerald-500',
+    placeholder: 'أدخل مفتاح CoinGecko (اختياري)...',
+    url: 'https://www.coingecko.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'coincap',
+    categoryId: 'crypto_data',
+    nameAr: 'CoinCap',
+    description: 'أسعار لحظية للأصول المشفرة عبر REST',
+    freeRequests: 'مجاني بدون مفتاح',
+    icon: '💹',
+    color: 'bg-indigo-700',
+    placeholder: 'لا يتطلب مفتاح (اختياري)',
+    url: 'https://docs.coincap.io/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'coinlayer',
+    categoryId: 'crypto_data',
+    nameAr: 'Coinlayer',
+    description: 'أسعار صرف العملات المشفرة في الوقت الحقيقي',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🧱',
+    color: 'bg-yellow-700',
+    placeholder: 'أدخل مفتاح Coinlayer...',
+    url: 'https://coinlayer.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'messari',
+    categoryId: 'crypto_data',
+    nameAr: 'Messari',
+    description: 'بيانات أصول مشفرة وتحليلات سوقية',
+    freeRequests: 'مجاني / خطة متقدمة',
+    icon: '📚',
+    color: 'bg-rose-700',
+    placeholder: 'أدخل مفتاح Messari (إن توفر)...',
+    url: 'https://messari.io/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'binance_api',
+    categoryId: 'crypto_data',
+    nameAr: 'Binance',
+    description: 'بيانات تداول العملات المشفرة من منصة Binance',
+    freeRequests: 'مجاني (حدود حسب المعدل)',
+    icon: '🟡',
+    color: 'bg-amber-600',
+    placeholder: 'أدخل مفتاح Binance (للبيانات الخاصة)...',
+    url: 'https://www.binance.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'marketaux',
+    categoryId: 'news_sentiment',
+    nameAr: 'MarketAux',
+    description: 'أخبار سوق مالية مع الوسوم والمعنويات',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🧠',
+    color: 'bg-rose-600',
+    placeholder: 'أدخل مفتاح MarketAux...',
+    url: 'https://www.marketaux.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'mediastack',
+    categoryId: 'news_sentiment',
+    nameAr: 'Mediastack',
+    description: 'تجميع أخبار لحظية من مصادر متعددة',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🗞️',
+    color: 'bg-orange-700',
+    placeholder: 'أدخل مفتاح Mediastack...',
+    url: 'https://mediastack.com/',
+    sourceLabel: 'Public APIs',
+  },
+  {
+    id: 'gnews',
+    categoryId: 'news_sentiment',
+    nameAr: 'GNews',
+    description: 'بحث واسترجاع الأخبار من مصادر عالمية',
+    freeRequests: 'خطة مجانية متاحة',
+    icon: '🌐',
+    color: 'bg-red-600',
+    placeholder: 'أدخل مفتاح GNews...',
+    url: 'https://gnews.io/',
+    sourceLabel: 'Public APIs',
   },
 ];
 
@@ -393,9 +749,20 @@ type SaveResult = {
   payload?: ProfileApiPayload | null;
 };
 
+function parseCapitalInput(raw: unknown): number | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.replace(/,/g, '').trim();
+  if (!cleaned) return null;
+  const value = Number(cleaned);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 export default function ProfilePage() {
   const { toast } = useToast();
-  const { user, token, updateUser } = useAuth();
+  const { user, token, refreshToken: refreshAuthToken, logout, updateUser } = useAuth();
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [reloadingStats, setReloadingStats] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -422,6 +789,7 @@ export default function ProfilePage() {
     primaryMarkets: [] as string[],
     annualIncome: '',
     netWorth: '',
+    actualInvestedCapitalSar: '',
   });
 
   // Preferences State
@@ -462,11 +830,62 @@ export default function ProfilePage() {
     memberSince: '',
     lastLogin: '',
   });
+
+  const buildAuthHeaders = useCallback((activeToken: string, initHeaders?: HeadersInit) => {
+    const headers = new Headers(initHeaders || {});
+    headers.set('Authorization', `Bearer ${activeToken}`);
+    return headers;
+  }, []);
+
+  const fetchWithAuthRetry = useCallback(async (url: string, init?: RequestInit) => {
+    if (!token) return null;
+
+    let response = await fetch(url, {
+      ...init,
+      headers: buildAuthHeaders(token, init?.headers),
+    });
+
+    if (response.status !== 401) return response;
+
+    const refreshed = await refreshAuthToken();
+    if (!refreshed || typeof window === 'undefined') {
+      logout();
+      return response;
+    }
+
+    const nextToken = localStorage.getItem('token');
+    if (!nextToken) {
+      logout();
+      return response;
+    }
+
+    response = await fetch(url, {
+      ...init,
+      headers: buildAuthHeaders(nextToken, init?.headers),
+    });
+    if (response.status === 401) {
+      logout();
+    }
+    return response;
+  }, [buildAuthHeaders, logout, refreshAuthToken, token]);
   const [defaultProvider, setDefaultProvider] = useState('zai');
   const [defaultModel, setDefaultModel] = useState('default');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showApiKeys, setShowApiKeys] = useState<Record<string, boolean>>({});
   const [apiSaving, setApiSaving] = useState(false);
+  const marketProvidersByCategory = useMemo(() => {
+    const grouped: Record<ExternalApiCategoryId, ExternalApiProvider[]> = {
+      stocks_markets: [],
+      fundamentals_macro: [],
+      forex_currency: [],
+      crypto_data: [],
+      news_sentiment: [],
+    };
+    for (const provider of MARKET_DATA_PROVIDERS) {
+      grouped[provider.categoryId].push(provider);
+    }
+    return grouped;
+  }, []);
 
   const applyProfileResponse = useCallback((payload: ProfileApiPayload | null | undefined) => {
     const p = payload?.profile;
@@ -508,6 +927,10 @@ export default function ProfilePage() {
     });
 
     const ip = (prefs.investmentProfile as Record<string, unknown>) || {};
+    const manualCapitalSar = parseActualInvestedCapitalSar(prefs);
+    const capitalFromInvestmentProfile = parseCapitalInput(ip.actualInvestedCapitalSar);
+    const resolvedCapital = capitalFromInvestmentProfile ?? manualCapitalSar;
+
     setInvestmentProfile({
       experienceLevel: (ip.experienceLevel as string) || 'intermediate',
       riskTolerance: (ip.riskTolerance as string) || 'moderate',
@@ -515,6 +938,7 @@ export default function ProfilePage() {
       primaryMarkets: (ip.primaryMarkets as string[]) || [],
       annualIncome: (ip.annualIncome as string) || '',
       netWorth: (ip.netWorth as string) || '',
+      actualInvestedCapitalSar: resolvedCapital != null ? String(resolvedCapital) : '',
     });
 
     const up = (prefs.preferences as Record<string, unknown>) || {};
@@ -548,13 +972,21 @@ export default function ProfilePage() {
     else setLoadingProfile(true);
 
     try {
-      const res = await fetch('/api/profile', {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetchWithAuthRetry('/api/profile', {
         cache: 'no-store',
       });
+      if (!res) return;
 
       const payload = await res.json().catch(() => null);
       if (!res.ok) {
+        if (res.status === 401) {
+          const message = 'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى';
+          setLastError(message);
+          if (!silent) {
+            toast({ title: 'انتهت الجلسة', description: message, variant: 'destructive' });
+          }
+          return;
+        }
         const message = payload?.error || 'تعذر تحميل بيانات الملف الشخصي';
         setLastError(message);
         if (!silent) {
@@ -576,7 +1008,7 @@ export default function ProfilePage() {
       if (silent) setReloadingStats(false);
       else setLoadingProfile(false);
     }
-  }, [token, applyProfileResponse, toast]);
+  }, [token, fetchWithAuthRetry, applyProfileResponse, toast]);
 
   // Load profile from API
   useEffect(() => {
@@ -602,9 +1034,8 @@ export default function ProfilePage() {
 
       if (!token) return;
       try {
-        const response = await fetch('/api/settings', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const response = await fetchWithAuthRetry('/api/settings');
+        if (!response) return;
         if (!response.ok) return;
         const data = await response.json();
         const serverKeys = data?.keys && typeof data.keys === 'object' ? (data.keys as Record<string, string>) : null;
@@ -627,7 +1058,7 @@ export default function ProfilePage() {
     };
 
     void loadApiSettings();
-  }, [token]);
+  }, [fetchWithAuthRetry, token]);
 
   // Save helper
   const saveToApi = useCallback(async (input: { preferences: Record<string, unknown>; name?: string; email?: string }): Promise<SaveResult> => {
@@ -639,11 +1070,14 @@ export default function ProfilePage() {
       const body: Record<string, unknown> = { preferences: input.preferences };
       if (input.name !== undefined) body.name = input.name;
       if (input.email !== undefined) body.email = input.email;
-      const res = await fetch('/api/profile', {
+      const res = await fetchWithAuthRetry('/api/profile', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (!res) {
+        return { ok: false, error: 'يرجى تسجيل الدخول أولاً' };
+      }
 
       const payload = await res.json().catch(() => null) as ProfileApiPayload | null;
       if (!res.ok) {
@@ -659,20 +1093,29 @@ export default function ProfilePage() {
     } finally {
       setSaving(false);
     }
-  }, [token]);
+  }, [token, fetchWithAuthRetry]);
 
   // Build full preferences object for saving
-  const buildPrefs = useCallback(() => ({
-    fullNameAr: personalInfo.fullNameAr,
-    fullNameEn: personalInfo.fullNameEn,
-    phone: personalInfo.phone,
-    country: personalInfo.country,
-    city: personalInfo.city,
-    language: personalInfo.language,
-    timezone: personalInfo.timezone,
-    investmentProfile,
-    preferences,
-  }), [personalInfo, investmentProfile, preferences]);
+  const buildPrefs = useCallback(() => {
+    const manualCapitalSar = parseCapitalInput(investmentProfile.actualInvestedCapitalSar);
+    const normalizedInvestmentProfile: Record<string, unknown> = {
+      ...investmentProfile,
+      actualInvestedCapitalSar: manualCapitalSar,
+    };
+
+    return {
+      fullNameAr: personalInfo.fullNameAr,
+      fullNameEn: personalInfo.fullNameEn,
+      phone: personalInfo.phone,
+      country: personalInfo.country,
+      city: personalInfo.city,
+      language: personalInfo.language,
+      timezone: personalInfo.timezone,
+      investmentProfile: normalizedInvestmentProfile,
+      actualInvestedCapitalSar: manualCapitalSar,
+      preferences,
+    };
+  }, [personalInfo, investmentProfile, preferences]);
 
   const getAvailableModels = useCallback((providerId: string) => {
     const provider = ALL_AI_PROVIDERS.find((item) => item.id === providerId);
@@ -712,11 +1155,10 @@ export default function ProfilePage() {
       let syncedToServer = false;
       if (token) {
         try {
-          const response = await fetch('/api/settings', {
+          const response = await fetchWithAuthRetry('/api/settings', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
               keys: merged,
@@ -724,7 +1166,7 @@ export default function ProfilePage() {
               model: defaultModel,
             }),
           });
-          syncedToServer = response.ok;
+          syncedToServer = Boolean(response?.ok);
         } catch {
           syncedToServer = false;
         }
@@ -740,7 +1182,7 @@ export default function ProfilePage() {
     } finally {
       setApiSaving(false);
     }
-  }, [apiKeys, defaultModel, defaultProvider, toast, token]);
+  }, [apiKeys, defaultModel, defaultProvider, fetchWithAuthRetry, toast, token]);
 
   // Handle avatar upload
   const handleAvatarChange = () => {
@@ -798,6 +1240,16 @@ export default function ProfilePage() {
 
   // Handle save investment profile
   const handleSaveInvestmentProfile = async () => {
+    const rawCapital = investmentProfile.actualInvestedCapitalSar.trim();
+    if (rawCapital && parseCapitalInput(rawCapital) === null) {
+      toast({
+        title: 'قيمة غير صالحة',
+        description: 'يرجى إدخال رأس مال مستثمر صحيح أكبر من أو يساوي صفر',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     const result = await saveToApi({ preferences: buildPrefs() });
     if (result.ok) {
       if (result.payload?.profile) applyProfileResponse(result.payload);
@@ -1302,7 +1754,7 @@ export default function ProfilePage() {
                     <Separator />
 
                     {/* Financial Info */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                       <div className="space-y-2">
                         <Label className="flex items-center gap-2">
                           <Wallet className="h-4 w-4" />
@@ -1346,6 +1798,24 @@ export default function ProfilePage() {
                             ))}
                           </SelectContent>
                         </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="flex items-center gap-2">
+                          <Wallet className="h-4 w-4" />
+                          رأس المال المستثمر الفعلي (ر.س)
+                        </Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          inputMode="decimal"
+                          placeholder="مثال: 250000"
+                          value={investmentProfile.actualInvestedCapitalSar}
+                          onChange={(e) => setInvestmentProfile({ ...investmentProfile, actualInvestedCapitalSar: e.target.value })}
+                        />
+                        <p className="text-[11px] text-muted-foreground">
+                          يستخدم هذا الرقم كأساس الربح/الخسارة من بداية الاستثمار على مستوى الحساب بالكامل.
+                        </p>
                       </div>
                     </div>
 
@@ -1696,46 +2166,80 @@ export default function ProfilePage() {
                             <span className="font-semibold">بيانات السوق والأسعار</span>
                           </div>
                         </AccordionTrigger>
-                        <AccordionContent className="space-y-4 pt-4">
-                          {MARKET_DATA_PROVIDERS.map((provider) => (
-                            <div key={provider.id} className="p-4 border rounded-lg space-y-3">
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="flex items-center gap-3">
-                                  <span className={`text-2xl p-2 rounded ${provider.color}`}>{provider.icon}</span>
-                                  <div>
-                                    <p className="font-semibold">{provider.nameAr}</p>
-                                    <p className="text-sm text-muted-foreground">{provider.description}</p>
-                                    <Badge variant="secondary" className="mt-1">{provider.freeRequests}</Badge>
+                        <AccordionContent className="space-y-5 pt-4">
+                          {API_PROVIDER_CATEGORIES.map((category) => {
+                            const providers = marketProvidersByCategory[category.id] || [];
+                            if (!providers.length) return null;
+
+                            return (
+                              <div key={category.id} className="rounded-xl border bg-muted/30 p-4 space-y-3">
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-lg">{category.icon}</span>
+                                      <p className="font-semibold">{category.nameAr}</p>
+                                      <Badge variant="outline">{providers.length} مزود</Badge>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">{category.description}</p>
                                   </div>
                                 </div>
-                                <a
-                                  href={provider.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-primary hover:underline flex items-center gap-1 text-xs"
-                                >
-                                  احصل على مفتاح <ExternalLink className="h-3 w-3" />
-                                </a>
+
+                                <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                                  {providers.map((provider) => (
+                                    <div key={provider.id} className="p-4 border rounded-lg space-y-3 bg-background/80">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="flex items-center gap-3">
+                                          <span className={`text-2xl p-2 rounded ${provider.color}`}>{provider.icon}</span>
+                                          <div>
+                                            <p className="font-semibold">{provider.nameAr}</p>
+                                            <p className="text-sm text-muted-foreground">{provider.description}</p>
+                                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                              <Badge variant="secondary">{provider.freeRequests}</Badge>
+                                              {provider.sourceLabel ? <Badge variant="outline">{provider.sourceLabel}</Badge> : null}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <a
+                                          href={provider.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-primary hover:underline flex items-center gap-1 text-xs whitespace-nowrap"
+                                        >
+                                          احصل على مفتاح <ExternalLink className="h-3 w-3" />
+                                        </a>
+                                      </div>
+                                      <div className="relative">
+                                        <Input
+                                          type={showApiKeys[provider.id] ? 'text' : 'password'}
+                                          placeholder={provider.placeholder}
+                                          value={apiKeys[provider.id] || ''}
+                                          onChange={(e) => setApiKeys({ ...apiKeys, [provider.id]: e.target.value })}
+                                        />
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="absolute left-0 top-0 h-full px-3"
+                                          onClick={() =>
+                                            setShowApiKeys({
+                                              ...showApiKeys,
+                                              [provider.id]: !showApiKeys[provider.id],
+                                            })
+                                          }
+                                        >
+                                          {showApiKeys[provider.id] ? (
+                                            <EyeOff className="h-4 w-4" />
+                                          ) : (
+                                            <Eye className="h-4 w-4" />
+                                          )}
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
-                              <div className="relative">
-                                <Input
-                                  type={showApiKeys[provider.id] ? 'text' : 'password'}
-                                  placeholder={provider.placeholder}
-                                  value={apiKeys[provider.id] || ''}
-                                  onChange={(e) => setApiKeys({ ...apiKeys, [provider.id]: e.target.value })}
-                                />
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="absolute left-0 top-0 h-full px-3"
-                                  onClick={() => setShowApiKeys({ ...showApiKeys, [provider.id]: !showApiKeys[provider.id] })}
-                                >
-                                  {showApiKeys[provider.id] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </AccordionContent>
                       </AccordionItem>
 

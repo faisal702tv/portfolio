@@ -50,6 +50,20 @@ export interface MarketQuote {
   volume?: number | null;
   /** متوسط الحجم. */
   averageVolume?: number | null;
+  /** متوسط حجم 10 أيام (إن توفر). */
+  averageVolume10Day?: number | null;
+  /** Short ratio / days to cover. */
+  shortRatio?: number | null;
+  /** نسبة الشورت من الـ float (٪). */
+  shortPercentOfFloat?: number | null;
+  /** عدد أسهم الشورت. */
+  sharesShort?: number | null;
+  /** عدد الأسهم القائمة. */
+  sharesOutstanding?: number | null;
+  /** عدد الأسهم الحرة للتداول. */
+  floatShares?: number | null;
+  /** مصدر بيانات الشورت/المرجع. */
+  shortDataSource?: string | null;
   /** القيمة السوقية. */
   marketCap?: number | null;
   /** العملة. */

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -40,9 +40,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { notifySuccess, notifyWarning, notifyInfo, notifyError } from '@/hooks/use-notifications';
+import { notifySuccess, notifyWarning, notifyError } from '@/hooks/use-notifications';
 import { cn } from '@/lib/utils';
-import { formatCurrencyByCode } from '@/lib/helpers';
+import { convertCurrency, formatCurrencyByCode } from '@/lib/helpers';
+import { resolveAssetMarket } from '@/lib/asset-market';
+import { convertSarToCurrency, parseActualInvestedCapitalSar } from '@/lib/profile-finance';
+import { useLivePrices } from '@/hooks/use-live-prices';
 import {
   Plus, Trash2, CheckCircle2, Edit2, GripVertical,
   Briefcase, BarChart3, TrendingUp, TrendingDown, Wallet,
@@ -58,14 +61,14 @@ interface StockItem {
   industry?: string;
   qty: number;
   buyPrice: number;
-  currentPrice: number;
+  currentPrice?: number | null;
   change?: number;
   changePct?: number;
-  totalCost: number;
-  currentValue: number;
-  profitLoss: number;
-  profitLossPct: number;
-  buyCurrency: string;
+  totalCost?: number | null;
+  currentValue?: number | null;
+  profitLoss?: number | null;
+  profitLossPct?: number | null;
+  buyCurrency?: string | null;
   exchange?: string;
 }
 
@@ -74,9 +77,11 @@ interface FundItem {
   symbol: string;
   name: string;
   fundType?: string;
+  exchange?: string;
+  currency?: string;
   units: number;
   buyPrice: number;
-  currentPrice: number;
+  currentPrice?: number | null;
 }
 
 interface BondItem {
@@ -84,10 +89,12 @@ interface BondItem {
   symbol: string;
   name: string;
   type?: string;
+  exchange?: string;
+  currency?: string;
   faceValue?: number;
   qty: number;
   buyPrice: number;
-  currentPrice: number;
+  currentPrice?: number | null;
 }
 
 interface PortfolioItem {
@@ -109,10 +116,10 @@ interface PortfolioItem {
 const SELECTED_PORTFOLIO_KEY = 'selected_portfolio_id';
 const PORTFOLIO_ORDER_KEY = 'portfolio_order_ids';
 
-const EXCHANGE_RATES: Record<string, number> = {
-  SAR: 1, USD: 3.75, EUR: 4.05, GBP: 4.75, AED: 1.02, KWD: 12.27, QAR: 1.03, BHD: 9.95, EGP: 0.074,
-  JOD: 5.29, OMR: 9.74,
+type PriceEntry = {
+  price: number;
 };
+type PriceMap = Record<string, PriceEntry>;
 
 const CURRENCY_OPTIONS = [
   { code: 'SAR', label: 'ر.س (SAR) - ريال سعودي' },
@@ -134,10 +141,72 @@ function normalizeCurrencyCode(value?: string | null): string {
 }
 
 function convertTo(amount: number, fromCurrency: string, toCurrency: string): number {
-  const from = normalizeCurrencyCode(fromCurrency);
-  const to = normalizeCurrencyCode(toCurrency);
-  const sarAmount = amount * (EXCHANGE_RATES[from] || 1);
-  return sarAmount / (EXCHANGE_RATES[to] || 1);
+  return convertCurrency(Number.isFinite(amount) ? amount : 0, normalizeCurrencyCode(fromCurrency), normalizeCurrencyCode(toCurrency));
+}
+
+const EXCHANGE_SUFFIX_MAP: Record<string, string> = {
+  TADAWUL: '.SR', SAUDI: '.SR', TASI: '.SR',
+  ADX: '.AD', DFM: '.DU',
+  KSE: '.KW', BOURSA: '.KW',
+  QSE: '.QA', QATAR: '.QA',
+  BHB: '.BH', BAHRAIN: '.BH',
+  EGX: '.CA', EGYPT: '.CA',
+  MSM: '.OM', MSX: '.OM', OMAN: '.OM',
+  ASE: '.JO', AMMAN: '.JO',
+  LSE: '.L', LONDON: '.L',
+};
+
+const PRICE_PREFIXES = ['SAUDI_', 'ADX_', 'DFM_', 'KSE_', 'QSE_', 'BHX_', 'MSX_', 'EGX_', 'ASE_', 'FUND_', 'US_'];
+
+function buildPriceCandidates(symbol: string, exchange?: string): string[] {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return [];
+  const candidates = new Set<string>();
+  const addCandidate = (candidate?: string | null) => {
+    if (!candidate) return;
+    const cleaned = candidate.trim().toUpperCase();
+    if (!cleaned) return;
+    candidates.add(cleaned);
+    candidates.add(cleaned.replace(/\./g, '_'));
+  };
+
+  addCandidate(normalized);
+
+  const dotIndex = normalized.indexOf('.');
+  if (dotIndex > 0) addCandidate(normalized.substring(0, dotIndex));
+
+  if (!normalized.includes('.') && exchange) {
+    const upperExch = exchange.toUpperCase().trim();
+    for (const [key, suffix] of Object.entries(EXCHANGE_SUFFIX_MAP)) {
+      if (upperExch.includes(key)) {
+        addCandidate(`${normalized}${suffix}`);
+        break;
+      }
+    }
+  }
+
+  const baseCandidates = Array.from(candidates);
+  for (const prefix of PRICE_PREFIXES) {
+    for (const base of baseCandidates) addCandidate(`${prefix}${base}`);
+  }
+
+  return Array.from(candidates);
+}
+
+function resolvePriceEntry(prices: PriceMap, symbol: string, exchange?: string): PriceEntry | null {
+  const candidates = buildPriceCandidates(symbol, exchange);
+
+  for (const candidate of candidates) {
+    const entry = prices[candidate];
+    if (entry?.price != null) return entry;
+  }
+
+  const lowerCandidates = new Set(candidates.map((item) => item.toLowerCase()));
+  for (const [key, entry] of Object.entries(prices)) {
+    if (lowerCandidates.has(key.toLowerCase()) && entry?.price != null) return entry;
+  }
+
+  return null;
 }
 
 function applyOrder<T extends { id: string }>(items: T[], orderedIds: string[]) {
@@ -181,14 +250,146 @@ const typeLabels: Record<string, string> = {
   international: 'دولية', saudi: 'سعودية', crypto: 'عملات رقمية',
 };
 
+type PortfolioStats = {
+  stockCount: number;
+  cryptoCount: number;
+  forexCount: number;
+  fundCount: number;
+  commodityCount: number;
+  bondCount: number;
+  totalPL: number;
+  totalCost: number;
+  totalValue: number;
+  plPct: number;
+  currency: string;
+};
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function calculatePortfolioStats(portfolio: PortfolioItem, prices: PriceMap, displayCurrency?: string): PortfolioStats {
+  const stocks = portfolio.stocks || [];
+  const funds = portfolio.funds || [];
+  const bonds = portfolio.bonds || [];
+  const portfolioCurrency = normalizeCurrencyCode(portfolio.currency || 'SAR');
+  const targetCurrency = normalizeCurrencyCode(displayCurrency || portfolioCurrency);
+
+  let stockCount = 0;
+  let cryptoCount = 0;
+  let forexCount = 0;
+  let fundCount = 0;
+  let commodityCount = 0;
+  let totalCost = 0;
+  let totalValue = 0;
+
+  for (const stock of stocks) {
+    const stockType = classifyStock(stock);
+    if (stockType === 'crypto') cryptoCount += 1;
+    else if (stockType === 'forex') forexCount += 1;
+    else stockCount += 1;
+
+    const qty = finiteNumber(stock.qty);
+    const buyPrice = finiteNumber(stock.buyPrice);
+    const livePrice = resolvePriceEntry(prices, stock.symbol, stock.exchange)?.price;
+    const fallbackCurrentPrice = finiteNumber(stock.currentPrice, buyPrice);
+    const valuePrice = finiteNumber(livePrice, fallbackCurrentPrice);
+    const storedTotalCost = stock.totalCost != null ? finiteNumber(stock.totalCost, NaN) : NaN;
+    const storedCurrentValue = stock.currentValue != null ? finiteNumber(stock.currentValue, NaN) : NaN;
+
+    const priceMarket = resolveAssetMarket({
+      symbol: stock.symbol,
+      exchange: stock.exchange,
+      currency: stock.buyCurrency || portfolioCurrency,
+      assetClass: stockType === 'crypto' ? 'crypto' : stockType === 'forex' ? 'forex' : 'stock',
+    });
+
+    const costCurrency = normalizeCurrencyCode(stock.buyCurrency || priceMarket.currency || portfolioCurrency);
+    const valueCurrency = normalizeCurrencyCode(priceMarket.currency || stock.buyCurrency || portfolioCurrency);
+
+    const costNative = Number.isFinite(storedTotalCost) ? storedTotalCost : qty * buyPrice;
+    const valueNative = livePrice != null || Number.isFinite(Number(stock.currentPrice))
+      ? qty * valuePrice
+      : (Number.isFinite(storedCurrentValue) ? storedCurrentValue : qty * buyPrice);
+
+    totalCost += convertTo(costNative, costCurrency, targetCurrency);
+    totalValue += convertTo(valueNative, valueCurrency, targetCurrency);
+  }
+
+  for (const fund of funds) {
+    const fundType = classifyFund(fund);
+    if (fundType === 'commodities') commodityCount += 1;
+    else fundCount += 1;
+
+    const units = finiteNumber(fund.units);
+    const buyPrice = finiteNumber(fund.buyPrice);
+    const livePrice = fund.symbol ? resolvePriceEntry(prices, fund.symbol, fund.exchange)?.price : undefined;
+    const price = finiteNumber(livePrice, finiteNumber(fund.currentPrice, buyPrice));
+
+    const fundMarket = resolveAssetMarket({
+      symbol: fund.symbol || fund.name,
+      exchange: fund.exchange,
+      currency: fund.currency || portfolioCurrency,
+      assetClass: fundType === 'commodities' ? 'commodity' : 'fund',
+    });
+    const priceCurrency = normalizeCurrencyCode(fundMarket.currency || fund.currency || portfolioCurrency);
+
+    const costNative = units * buyPrice;
+    const valueNative = units * price;
+    totalCost += convertTo(costNative, priceCurrency, targetCurrency);
+    totalValue += convertTo(valueNative, priceCurrency, targetCurrency);
+  }
+
+  for (const bond of bonds) {
+    const qty = finiteNumber(bond.qty);
+    const faceValue = finiteNumber(bond.faceValue, 1000);
+    const buyPrice = finiteNumber(bond.buyPrice);
+    const livePrice = bond.symbol ? resolvePriceEntry(prices, bond.symbol, bond.exchange)?.price : undefined;
+    const currentPrice = finiteNumber(livePrice, finiteNumber(bond.currentPrice, buyPrice));
+
+    const bondMarket = resolveAssetMarket({
+      symbol: bond.symbol,
+      exchange: bond.exchange,
+      currency: bond.currency || portfolioCurrency,
+      assetClass: 'bond',
+    });
+    const bondCurrency = normalizeCurrencyCode(bondMarket.currency || bond.currency || portfolioCurrency);
+
+    const costNative = qty * faceValue * (buyPrice / 100);
+    const valueNative = qty * faceValue * (currentPrice / 100);
+    totalCost += convertTo(costNative, bondCurrency, targetCurrency);
+    totalValue += convertTo(valueNative, bondCurrency, targetCurrency);
+  }
+
+  const totalPL = totalValue - totalCost;
+  const plPct = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
+
+  return {
+    stockCount,
+    cryptoCount,
+    forexCount,
+    fundCount,
+    commodityCount,
+    bondCount: bonds.length,
+    totalPL,
+    totalCost,
+    totalValue,
+    plPct,
+    currency: targetCurrency,
+  };
+}
+
 function SortablePortfolioCard({
   portfolio,
+  prices,
   saving,
   onSetActive,
   onRename,
   onDelete,
 }: {
   portfolio: PortfolioItem;
+  prices: PriceMap;
   saving: boolean;
   onSetActive: (id: string) => void;
   onRename: (portfolio: PortfolioItem) => void;
@@ -197,60 +398,7 @@ function SortablePortfolioCard({
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: portfolio.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
 
-  const stats = useMemo(() => {
-    const stocks = portfolio.stocks || [];
-    const funds = portfolio.funds || [];
-    const bonds = portfolio.bonds || [];
-    const targetCurrency = portfolio.currency || 'SAR';
-
-    let stockCount = 0, cryptoCount = 0, forexCount = 0;
-    let fundCount = 0, commodityCount = 0;
-    let totalPL = 0, totalCost = 0, totalValue = 0;
-
-    for (const s of stocks) {
-      const type = classifyStock(s);
-      if (type === 'crypto') cryptoCount++;
-      else if (type === 'forex') forexCount++;
-      else stockCount++;
-      const qty = s.qty || 0;
-      const buy = s.buyPrice || 0;
-      const cur = s.currentPrice || 0;
-      const srcCur = s.buyCurrency || targetCurrency;
-      const cost = convertTo(s.totalCost || buy * qty, srcCur, targetCurrency);
-      const val = convertTo(s.currentValue || cur * qty, srcCur, targetCurrency);
-      totalCost += cost;
-      totalValue += val;
-      totalPL += val - cost;
-    }
-    for (const f of funds) {
-      const type = classifyFund(f);
-      if (type === 'commodities') commodityCount++;
-      else fundCount++;
-      const units = f.units || 0;
-      const buy = f.buyPrice || 0;
-      const cur = f.currentPrice || 0;
-      const srcCur = portfolio.currency || 'SAR';
-      const cost = convertTo(buy * units, srcCur, targetCurrency);
-      const val = convertTo(cur * units, srcCur, targetCurrency);
-      totalCost += cost;
-      totalValue += val;
-      totalPL += val - cost;
-    }
-    for (const b of bonds) {
-      const qty = b.qty || 0;
-      const buy = b.buyPrice || 0;
-      const cur = b.currentPrice || 0;
-      const srcCur = portfolio.currency || 'SAR';
-      const cost = convertTo(buy * qty, srcCur, targetCurrency);
-      const val = convertTo(cur * qty, srcCur, targetCurrency);
-      totalCost += cost;
-      totalValue += val;
-      totalPL += val - cost;
-    }
-
-    const plPct = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
-    return { stockCount, cryptoCount, forexCount, fundCount, commodityCount, bondCount: bonds.length, totalPL, totalCost, totalValue, plPct, currency: targetCurrency };
-  }, [portfolio]);
+  const stats = useMemo(() => calculatePortfolioStats(portfolio, prices), [portfolio, prices]);
 
   const isProfit = stats.totalPL >= 0;
 
@@ -374,13 +522,14 @@ export default function PortfoliosPage() {
   const [saving, setSaving] = useState(false);
   const [portfolios, setPortfolios] = useState<PortfolioItem[]>([]);
   const [summaryCurrency, setSummaryCurrency] = useState('SAR');
+  const [manualInvestedCapitalSar, setManualInvestedCapitalSar] = useState<number | null>(null);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingPortfolio, setEditingPortfolio] = useState<PortfolioItem | null>(null);
   const [editingName, setEditingName] = useState('');
   const [form, setForm] = useState({ name: '', description: '', type: 'mixed', currency: 'SAR' });
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-  const loadPortfolios = async () => {
+  const loadPortfolios = useCallback(async () => {
     setLoading(true);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('token') : '';
@@ -395,9 +544,30 @@ export default function PortfoliosPage() {
     } catch (error) {
       toast({ title: 'خطأ', description: error instanceof Error ? error.message : 'تعذر تحميل المحافظ', variant: 'destructive' });
     } finally { setLoading(false); }
-  };
+  }, [toast]);
 
-  useEffect(() => { void loadPortfolios(); }, []);
+  const loadManualCapital = useCallback(async () => {
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : '';
+      const response = await fetch('/api/profile', {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (!response.ok) {
+        setManualInvestedCapitalSar(null);
+        return;
+      }
+      const payload = await response.json().catch(() => null);
+      setManualInvestedCapitalSar(parseActualInvestedCapitalSar(payload?.profile?.preferences));
+    } catch {
+      setManualInvestedCapitalSar(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPortfolios();
+    void loadManualCapital();
+  }, [loadPortfolios, loadManualCapital]);
 
   useEffect(() => {
     const activePortfolio = portfolios.find((p) => p.isActive);
@@ -405,6 +575,28 @@ export default function PortfoliosPage() {
       setSummaryCurrency((prev) => (prev === 'SAR' ? normalizeCurrencyCode(activePortfolio.currency) : prev));
     }
   }, [portfolios]);
+
+  const symbolsToFetch = useMemo(() => {
+    const symbols = new Set<string>();
+    for (const portfolio of portfolios) {
+      for (const stock of (portfolio.stocks || [])) {
+        const symbol = String(stock.symbol || '').trim().toUpperCase();
+        if (symbol) symbols.add(symbol);
+      }
+      for (const fund of (portfolio.funds || [])) {
+        const symbol = String(fund.symbol || '').trim().toUpperCase();
+        if (symbol) symbols.add(symbol);
+      }
+      for (const bond of (portfolio.bonds || [])) {
+        const symbol = String(bond.symbol || '').trim().toUpperCase();
+        if (symbol) symbols.add(symbol);
+      }
+    }
+    return Array.from(symbols);
+  }, [portfolios]);
+
+  const { prices } = useLivePrices({ refreshInterval: 60000, symbols: symbolsToFetch });
+  const typedPrices = prices as PriceMap;
 
   const createPortfolio = async () => {
     if (!form.name.trim()) { toast({ title: 'اسم المحفظة مطلوب', variant: 'destructive' }); return; }
@@ -500,40 +692,56 @@ export default function PortfoliosPage() {
   const globalStats = useMemo(() => {
     const displayCurrency = normalizeCurrencyCode(summaryCurrency);
 
-    let totalValue = 0, totalCost = 0, totalStocks = 0, totalCrypto = 0, totalForex = 0;
-    let totalFunds = 0, totalCommodities = 0, totalBonds = 0;
+    let totalValue = 0;
+    let computedTotalCost = 0;
+    let totalStocks = 0;
+    let totalCrypto = 0;
+    let totalForex = 0;
+    let totalFunds = 0;
+    let totalCommodities = 0;
+    let totalBonds = 0;
+
     for (const p of portfolios) {
-      const pCur = p.currency || 'SAR';
-      for (const s of (p.stocks || [])) {
-        const t = classifyStock(s);
-        if (t === 'crypto') totalCrypto++;
-        else if (t === 'forex') totalForex++;
-        else totalStocks++;
-        const qty = s.qty || 0;
-        const srcCur = s.buyCurrency || pCur;
-        totalCost += convertTo(s.totalCost || (s.buyPrice || 0) * qty, srcCur, displayCurrency);
-        totalValue += convertTo(s.currentValue || (s.currentPrice || 0) * qty, srcCur, displayCurrency);
-      }
-      for (const f of (p.funds || [])) {
-        const t = classifyFund(f);
-        if (t === 'commodities') totalCommodities++;
-        else totalFunds++;
-        const units = f.units || 0;
-        totalCost += convertTo((f.buyPrice || 0) * units, pCur, displayCurrency);
-        totalValue += convertTo((f.currentPrice || 0) * units, pCur, displayCurrency);
-      }
-      for (const b of (p.bonds || [])) {
-        totalBonds++;
-        const qty = b.qty || 0;
-        totalCost += convertTo((b.buyPrice || 0) * qty, pCur, displayCurrency);
-        totalValue += convertTo((b.currentPrice || 0) * qty, pCur, displayCurrency);
-      }
+      const stats = calculatePortfolioStats(p, typedPrices, displayCurrency);
+      computedTotalCost += stats.totalCost;
+      totalValue += stats.totalValue;
+      totalStocks += stats.stockCount;
+      totalCrypto += stats.cryptoCount;
+      totalForex += stats.forexCount;
+      totalFunds += stats.fundCount;
+      totalCommodities += stats.commodityCount;
+      totalBonds += stats.bondCount;
     }
+
+    const hasManualCapital = typeof manualInvestedCapitalSar === 'number'
+      && Number.isFinite(manualInvestedCapitalSar)
+      && manualInvestedCapitalSar > 0;
+    const manualTotalCost = hasManualCapital
+      ? convertSarToCurrency(manualInvestedCapitalSar, displayCurrency)
+      : null;
+    const totalCost = manualTotalCost ?? computedTotalCost;
     const totalPL = totalValue - totalCost;
     const plPct = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
     const totalAssets = totalStocks + totalCrypto + totalForex + totalFunds + totalCommodities + totalBonds;
-    return { totalValue, totalCost, totalPL, plPct, totalAssets, totalStocks, totalCrypto, totalForex, totalFunds, totalCommodities, totalBonds, currency: displayCurrency };
-  }, [portfolios, summaryCurrency]);
+    const capitalDifference = hasManualCapital ? totalCost - computedTotalCost : null;
+    return {
+      totalValue,
+      totalCost,
+      computedTotalCost,
+      totalPL,
+      plPct,
+      totalAssets,
+      totalStocks,
+      totalCrypto,
+      totalForex,
+      totalFunds,
+      totalCommodities,
+      totalBonds,
+      currency: displayCurrency,
+      isManualCapitalApplied: hasManualCapital,
+      capitalDifference,
+    };
+  }, [portfolios, summaryCurrency, typedPrices, manualInvestedCapitalSar]);
 
   const handleReorder = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -648,12 +856,30 @@ export default function PortfoliosPage() {
                   <Coins className="h-4 w-4 text-purple-600" />
                 </div>
                 <div>
-                  <p className="text-[10px] text-muted-foreground">التكلفة</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {globalStats.isManualCapitalApplied ? 'رأس المال المستثمر' : 'التكلفة'}
+                  </p>
                   <p className="text-lg font-bold">{formatCurrencyByCode(globalStats.totalCost, globalStats.currency)}</p>
                 </div>
               </CardContent>
             </Card>
           </div>
+
+          {globalStats.isManualCapitalApplied && (
+            <Card className="border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20">
+              <CardContent className="p-3 text-xs space-y-1">
+                <p className="font-semibold text-emerald-700 dark:text-emerald-300">
+                  تم اعتماد رأس المال المستثمر الفعلي من صفحة الملف الشخصي والإعدادات كأساس الربح/الخسارة.
+                </p>
+                <p className="text-muted-foreground">
+                  التكلفة المحسوبة من المراكز: {formatCurrencyByCode(globalStats.computedTotalCost, globalStats.currency)}
+                  {typeof globalStats.capitalDifference === 'number' && (
+                    <> · الفرق: {globalStats.capitalDifference >= 0 ? '+' : ''}{formatCurrencyByCode(globalStats.capitalDifference, globalStats.currency)}</>
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Category Breakdown */}
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
@@ -724,7 +950,7 @@ export default function PortfoliosPage() {
               </div>
               <Progress value={Math.min(Math.abs(plPct), 100)} className={cn("h-3", isProfit ? "[&>div]:bg-green-500" : "[&>div]:bg-red-500")} />
               <div className="flex justify-between mt-1 text-[10px] text-muted-foreground">
-                <span>التكلفة: {formatCurrencyByCode(globalStats.totalCost, globalStats.currency)}</span>
+                <span>{globalStats.isManualCapitalApplied ? 'رأس المال الفعلي' : 'التكلفة'}: {formatCurrencyByCode(globalStats.totalCost, globalStats.currency)}</span>
                 <span>القيمة: {formatCurrencyByCode(globalStats.totalValue, globalStats.currency)}</span>
               </div>
             </Card>
@@ -795,6 +1021,7 @@ export default function PortfoliosPage() {
                     <SortablePortfolioCard
                       key={portfolio.id}
                       portfolio={portfolio}
+                      prices={typedPrices}
                       saving={saving}
                       onSetActive={(id) => void setActivePortfolio(id)}
                       onRename={openRenameDialog}

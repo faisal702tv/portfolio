@@ -47,7 +47,7 @@ const MODULE_PERMISSION_DEFINITIONS = [
     kind: 'module',
     label: 'التحليل الذكي',
     description: 'تحليلات AI، الفني، الأساسي، المخاطر',
-    routePrefixes: ['/ai-analysis', '/technical-analysis', '/risk-analysis', '/calculator', '/candlestick', '/fundamental-analysis', '/ai-assistant', '/ai-chatbot', '/portfolio-ai'],
+    routePrefixes: ['/ai-analysis', '/technical-analysis', '/technical-schools', '/risk-analysis', '/calculator', '/candlestick', '/fundamental-analysis', '/ai-assistant', '/ai-chatbot', '/portfolio-ai'],
   },
   {
     key: 'module.news',
@@ -96,6 +96,7 @@ const PAGE_PERMISSION_DEFINITIONS = [
   { key: 'page.sell-history', kind: 'page', label: 'سجل البيع', description: 'صفحة سجل البيع', routePrefixes: ['/sell-history'] },
   { key: 'page.ai-analysis', kind: 'page', label: 'تحليل AI', description: 'صفحة التحليل بالذكاء الاصطناعي', routePrefixes: ['/ai-analysis'] },
   { key: 'page.technical-analysis', kind: 'page', label: 'التحليل الفني', description: 'صفحة التحليل الفني', routePrefixes: ['/technical-analysis'] },
+  { key: 'page.technical-schools', kind: 'page', label: 'المدارس الفنية', description: 'صفحة استراتيجية المدارس الفنية الذكية', routePrefixes: ['/technical-schools'] },
   { key: 'page.risk-analysis', kind: 'page', label: 'تحليل المخاطر', description: 'صفحة تحليل المخاطر', routePrefixes: ['/risk-analysis'] },
   { key: 'page.calculator', kind: 'page', label: 'الحاسبة', description: 'صفحة الحاسبة', routePrefixes: ['/calculator'] },
   { key: 'page.candlestick', kind: 'page', label: 'الشموع اليابانية', description: 'صفحة الشموع اليابانية', routePrefixes: ['/candlestick'] },

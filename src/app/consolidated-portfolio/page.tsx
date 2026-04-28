@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,6 +18,7 @@ import {
 } from '@/lib/export-utils';
 import { convertCurrency, formatCurrency, formatCurrencyByCode, formatNumber, formatPercent } from '@/lib/helpers';
 import { resolveAssetMarket } from '@/lib/asset-market';
+import { parseActualInvestedCapitalSar } from '@/lib/profile-finance';
 import { useToast } from '@/hooks/use-toast';
 import { calcTradeFees, getTaxDefaults } from '@/lib/tax-settings';
 import { calcPurificationAmount, fetchPurificationMetrics, ZERO_PURIFICATION_METRICS } from '@/lib/purification';
@@ -27,7 +28,7 @@ import {
 } from 'recharts';
 import {
   Search, Layers, TrendingUp, TrendingDown, Wallet, Filter,
-  CheckCircle2, XCircle, PieChart as PieChartIcon, RefreshCw,
+  PieChart as PieChartIcon, RefreshCw,
   BarChart3, Banknote, Activity, ArrowRightLeft, Edit2, ArrowDownRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -59,8 +60,16 @@ interface AggregatedAsset {
   profitLossPct: number;
   high52w: number | null;
   low52w: number | null;
+  marketCap?: number | null;
+  priceSource?: string | null;
   volume?: number | null;
   averageVolume?: number | null;
+  shortPercentOfFloat?: number | null;
+  shortRatio?: number | null;
+  sharesShort?: number | null;
+  sharesOutstanding?: number | null;
+  floatShares?: number | null;
+  shortDataSource?: string | null;
   currency: string;
   shariaStatus: string | null;
   shariaBilad: string | null;
@@ -164,19 +173,86 @@ interface ApiQuote {
   changePct?: number;
   high52w?: number | null;
   low52w?: number | null;
+  marketCap?: number | null;
+  source?: string;
   volume?: number | null;
   averageVolume?: number | null;
+  shortPercentOfFloat?: number | null;
+  shortRatio?: number | null;
+  sharesShort?: number | null;
+  sharesOutstanding?: number | null;
+  floatShares?: number | null;
+  shortDataSource?: string | null;
   high?: number;
   low?: number;
 }
 
-const ACTION_BUTTON_BASE_CLASS = 'h-8 rounded-lg border-2 px-2.5 text-[11px] font-bold shadow-sm transition-colors';
+const PRICE_PREFIXES = ['SAUDI_', 'ADX_', 'DFM_', 'KSE_', 'QSE_', 'BHX_', 'MSX_', 'EGX_', 'ASE_', 'FUND_', 'US_'];
+
+function buildQuoteCandidates(symbol: string): string[] {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return [];
+
+  const candidates = new Set<string>();
+  const add = (value?: string | null) => {
+    if (!value) return;
+    const cleaned = String(value).trim().toUpperCase();
+    if (!cleaned) return;
+    candidates.add(cleaned);
+    candidates.add(cleaned.replace(/\./g, '_'));
+  };
+
+  add(normalized);
+  add(normalized.replace(/\.SAU$/, '.SR'));
+
+  const base = normalized
+    .replace(/\.SAU$/, '')
+    .replace(/\.SR$/, '');
+
+  if (base) add(base);
+
+  if (/^\d{3,6}$/.test(base)) {
+    add(`${base}.SR`);
+  }
+
+  if (/^\d{3,6}\.SR$/.test(normalized)) {
+    add(normalized.replace(/\.SR$/, ''));
+  }
+
+  const baseCandidates = Array.from(candidates);
+  for (const prefix of PRICE_PREFIXES) {
+    for (const key of baseCandidates) add(`${prefix}${key}`);
+  }
+
+  return Array.from(candidates);
+}
+
+function resolveLiveQuote(quotes: Record<string, ApiQuote>, symbol: string): ApiQuote | null {
+  const candidates = buildQuoteCandidates(symbol);
+  for (const candidate of candidates) {
+    const quote = quotes[candidate];
+    if (quote?.price != null) return quote;
+  }
+
+  const loweredCandidates = new Set(candidates.map((candidate) => candidate.toLowerCase()));
+  for (const [key, quote] of Object.entries(quotes)) {
+    if (loweredCandidates.has(key.toLowerCase()) && quote?.price != null) return quote;
+  }
+  return null;
+}
+
+const ACTION_BUTTON_BASE_CLASS = 'h-8 shrink-0 whitespace-nowrap rounded-lg border-2 px-2.5 text-[11px] font-bold shadow-sm transition-colors';
 const ACTION_MOVE_BUTTON_CLASS = `${ACTION_BUTTON_BASE_CLASS} border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-300`;
 const ACTION_EDIT_BUTTON_CLASS = `${ACTION_BUTTON_BASE_CLASS} border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-300`;
 const ACTION_SELL_BUTTON_CLASS = `${ACTION_BUTTON_BASE_CLASS} border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300`;
 
 type RankingFilter = 'default' | 'highest-value' | 'lowest-value' | 'highest-profit' | 'largest-loss';
 type PositionSource = 'stocks' | 'funds' | 'bonds';
+type LocalDividendRecord = {
+  status?: string;
+  totalDividend?: number;
+  currency?: string;
+};
 
 type AssetPositionRef = {
   portfolioId: string;
@@ -240,20 +316,25 @@ function buildAssetKey(portfolioId: string, symbol: string, type: string, curren
   return `${portfolioId || 'no-portfolio'}::${symbol}::${type}::${currency}`;
 }
 
+const LOCAL_DIVIDENDS_KEY = 'portfolio_dividends';
+
 // ── Component ─────────────────────────────────────────────
 
 export default function ConsolidatedPortfolioPage() {
   const { toast } = useToast();
   const { snapshot, portfolios } = usePortfolioSnapshot();
   const [summaryCurrency, setSummaryCurrency] = useState('SAR');
+  const [manualInvestedCapitalSar, setManualInvestedCapitalSar] = useState<number | null>(null);
   const [allSnapshots, setAllSnapshots] = useState<PortfolioSnapshot[]>([]);
   const [search, setSearch] = useState('');
   const [assetFilter, setAssetFilter] = useState('all');
-  const [rankingFilter, setRankingFilter] = useState<RankingFilter>('default');
+  const [portfolioFilter, setPortfolioFilter] = useState('all');
+  const [rankingFilter, setRankingFilter] = useState<RankingFilter>('highest-profit');
   const [liveQuotes, setLiveQuotes] = useState<Record<string, ApiQuote>>({});
   const [shariaMap, setShariaMap] = useState<Record<string, Partial<ShariaSearchResult>>>({});
   const [loadingPrices, setLoadingPrices] = useState(false);
   const [actionSaving, setActionSaving] = useState(false);
+  const [paidDividendsByCurrency, setPaidDividendsByCurrency] = useState<Record<string, number>>({});
   const pricesFetched = useRef(false);
   const shariaFetched = useRef(false);
 
@@ -306,6 +387,61 @@ export default function ConsolidatedPortfolioPage() {
       setSummaryCurrency((prev) => (prev === 'SAR' ? normalizeCurrencyCode(snapshot.currency) : prev));
     }
   }, [snapshot?.currency]);
+
+  useEffect(() => {
+    let active = true;
+    const loadManualCapital = async () => {
+      try {
+        const token = typeof window !== 'undefined' ? localStorage.getItem('token') : '';
+        const response = await fetch('/api/profile', {
+          cache: 'no-store',
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!response.ok) {
+          if (active) setManualInvestedCapitalSar(null);
+          return;
+        }
+        const payload = await response.json().catch(() => null);
+        if (!active) return;
+        setManualInvestedCapitalSar(parseActualInvestedCapitalSar(payload?.profile?.preferences));
+      } catch {
+        if (active) setManualInvestedCapitalSar(null);
+      }
+    };
+
+    void loadManualCapital();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const loadPaidDividends = () => {
+      try {
+        const raw = localStorage.getItem(LOCAL_DIVIDENDS_KEY);
+        const parsed = raw ? (JSON.parse(raw) as LocalDividendRecord[]) : [];
+        const map: Record<string, number> = {};
+
+        for (const record of Array.isArray(parsed) ? parsed : []) {
+          if (String(record?.status || '').toLowerCase() !== 'paid') continue;
+          const amount = Number(record?.totalDividend || 0);
+          if (!Number.isFinite(amount) || amount <= 0) continue;
+          const code = normalizeCurrencyCode(record?.currency);
+          map[code] = (map[code] || 0) + amount;
+        }
+
+        setPaidDividendsByCurrency(map);
+      } catch {
+        setPaidDividendsByCurrency({});
+      }
+    };
+
+    loadPaidDividends();
+    window.addEventListener('storage', loadPaidDividends);
+    return () => window.removeEventListener('storage', loadPaidDividends);
+  }, []);
 
   const getStockCurrency = useCallback((s: any): string => {
     const sector = s.sector || '';
@@ -540,7 +676,7 @@ export default function ConsolidatedPortfolioPage() {
 
   const enrichedAssets = useMemo(() => {
     return aggregatedAssets.map(asset => {
-      const q = liveQuotes[asset.symbol] || liveQuotes[asset.symbol.toUpperCase()];
+      const q = resolveLiveQuote(liveQuotes, asset.symbol);
       const sh = shariaMap[asset.symbol] || shariaMap[asset.symbol.toUpperCase()];
 
       let currentPrice = asset.currentPrice;
@@ -571,8 +707,16 @@ export default function ConsolidatedPortfolioPage() {
         profitLossPct,
         high52w,
         low52w,
+        marketCap: q?.marketCap ?? (q?.sharesOutstanding && currentPrice > 0 ? q.sharesOutstanding * currentPrice : asset.marketCap ?? null),
+        priceSource: q?.source ?? asset.priceSource ?? null,
         volume: q?.volume ?? null,
         averageVolume: q?.averageVolume ?? null,
+        shortPercentOfFloat: q?.shortPercentOfFloat ?? null,
+        shortRatio: q?.shortRatio ?? null,
+        sharesShort: q?.sharesShort ?? null,
+        sharesOutstanding: q?.sharesOutstanding ?? null,
+        floatShares: q?.floatShares ?? null,
+        shortDataSource: q?.shortDataSource ?? null,
         shariaStatus: sh?.shariaStatus || asset.shariaStatus,
         shariaBilad: sh?.shariaBilad || asset.shariaBilad,
         shariaRajhi: sh?.shariaRajhi || asset.shariaRajhi,
@@ -630,9 +774,38 @@ export default function ConsolidatedPortfolioPage() {
     return map;
   }, [allSnapshots, stockAssetKey, fundAssetKey, bondAssetKey]);
 
+  const portfolioFilterOptions = useMemo(() => {
+    const map = new Map<string, { label: string; count: number }>();
+    for (const asset of enrichedAssets) {
+      const value = asset.portfolioId || `name:${asset.portfolioName || 'محفظة'}`;
+      const label = asset.portfolioName || 'محفظة';
+      const existing = map.get(value) || { label, count: 0 };
+      existing.count += 1;
+      map.set(value, existing);
+    }
+    return Array.from(map.entries())
+      .map(([value, payload]) => ({ value, label: payload.label, count: payload.count }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ar'));
+  }, [enrichedAssets]);
+
+  const selectedPortfolioFilterLabel = useMemo(() => {
+    if (portfolioFilter === 'all') return 'كل المحافظ';
+    return portfolioFilterOptions.find((option) => option.value === portfolioFilter)?.label || 'محفظة';
+  }, [portfolioFilter, portfolioFilterOptions]);
+
+  useEffect(() => {
+    if (portfolioFilter === 'all') return;
+    if (!portfolioFilterOptions.some((option) => option.value === portfolioFilter)) {
+      setPortfolioFilter('all');
+    }
+  }, [portfolioFilter, portfolioFilterOptions]);
+
   const filteredAssets = useMemo(() => {
     let res = enrichedAssets;
     if (assetFilter !== 'all') res = res.filter(a => a.assetType === assetFilter);
+    if (portfolioFilter !== 'all') {
+      res = res.filter((a) => (a.portfolioId || `name:${a.portfolioName || 'محفظة'}`) === portfolioFilter);
+    }
     if (search) {
       const q = search.toLowerCase();
       res = res.filter(a => a.symbol.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
@@ -656,12 +829,19 @@ export default function ConsolidatedPortfolioPage() {
         break;
     }
     return sorted;
-  }, [enrichedAssets, assetFilter, search, rankingFilter]);
+  }, [enrichedAssets, assetFilter, portfolioFilter, search, rankingFilter]);
 
-  const totalCostSAR = filteredAssets.reduce((acc, a) => acc + a.totalCostSAR, 0);
+  const computedTotalCostSAR = filteredAssets.reduce((acc, a) => acc + a.totalCostSAR, 0);
   const totalValueSAR = filteredAssets.reduce((acc, a) => acc + a.totalValueSAR, 0);
+  const hasManualCapital = typeof manualInvestedCapitalSar === 'number'
+    && Number.isFinite(manualInvestedCapitalSar)
+    && manualInvestedCapitalSar > 0;
+  const isFullScopeView = assetFilter === 'all' && portfolioFilter === 'all' && !search.trim();
+  const isManualCapitalApplied = hasManualCapital && isFullScopeView;
+  const totalCostSAR = isManualCapitalApplied ? manualInvestedCapitalSar! : computedTotalCostSAR;
   const totalProfitSAR = totalValueSAR - totalCostSAR;
   const totalProfitPct = totalCostSAR > 0 ? (totalProfitSAR / totalCostSAR) * 100 : 0;
+  const capitalDifferenceSAR = isManualCapitalApplied ? (manualInvestedCapitalSar! - computedTotalCostSAR) : null;
 
   const allocationChartData = useMemo(() => {
     const grouped = new Map<string, { value: number; cost: number; pl: number; count: number }>();
@@ -734,6 +914,18 @@ export default function ConsolidatedPortfolioPage() {
     [summaryCurrency, toSummaryAmount]
   );
 
+  const totalPaidDividendsUnified = useMemo(() => {
+    return Object.entries(paidDividendsByCurrency).reduce((sum, [currency, amount]) => {
+      const safe = Number.isFinite(amount) ? amount : 0;
+      return sum + convertCurrency(safe, normalizeCurrencyCode(currency), summaryCurrency);
+    }, 0);
+  }, [paidDividendsByCurrency, summaryCurrency]);
+
+  const paidDividendsCurrencyCount = useMemo(
+    () => Object.keys(paidDividendsByCurrency).length,
+    [paidDividendsByCurrency]
+  );
+
   const allocationChartDataDisplay = useMemo(
     () => allocationChartData.map((item) => ({
       ...item,
@@ -762,46 +954,9 @@ export default function ConsolidatedPortfolioPage() {
     [plDistributionData, toSummaryAmount]
   );
 
-  const renderSharia = (asset: AggregatedAsset) => {
-    const items: { label: string; val: string | null }[] = [
-      { label: 'البلاد', val: asset.shariaBilad },
-      { label: 'الراجحي', val: asset.shariaRajhi },
-      { label: 'المقاصد', val: asset.shariaMaqasid },
-      { label: 'صفر ديون', val: asset.shariaZero },
-    ];
-    const hasAny = items.some(i => i.val);
-    if (!hasAny && !asset.shariaStatus) return <span className="text-xs text-muted-foreground">—</span>;
-
-    return (
-      <div className="flex flex-col gap-0.5">
-        {asset.shariaStatus && (
-          <div className="flex items-center gap-1 text-[10px]">
-            {['✅', 'Compliant', 'حلال', 'نقي'].includes(asset.shariaStatus)
-              ? <CheckCircle2 className="h-3 w-3 text-green-500" />
-              : <XCircle className="h-3 w-3 text-red-500" />}
-            <span className={['✅', 'Compliant', 'حلال', 'نقي'].includes(asset.shariaStatus) ? 'text-green-700' : 'text-red-700'}>
-              {asset.shariaStatus === '✅' ? 'متوافق' : asset.shariaStatus === '❌' ? 'غير متوافق' : asset.shariaStatus === 'حلال' ? 'حلال' : asset.shariaStatus === 'نقي' ? 'نقي' : asset.shariaStatus}
-            </span>
-          </div>
-        )}
-        <div className="flex flex-wrap gap-x-2">
-          {items.map(item => {
-            if (!item.val) return null;
-            const ok = ['✅', 'Compliant', 'compliant', 'حلال', 'نقي'].includes(item.val);
-            return (
-              <div key={item.label} className="flex items-center gap-0.5 text-[9px]">
-                {ok ? <CheckCircle2 className="h-2.5 w-2.5 text-green-500" /> : <XCircle className="h-2.5 w-2.5 text-red-500" />}
-                <span className={ok ? 'text-green-700' : 'text-red-700'}>{item.label}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-
   const curLabel = (currency: string) => currencySymbol(currency);
   const formatVolume = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(0)}K` : value.toLocaleString();
+  const formatSharesCount = (value: number) => value >= 1e9 ? `${(value / 1e9).toFixed(2)}B` : value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(2)}K` : value.toLocaleString();
 
   const pos52w = (price: number | null, high: number | null | undefined, low: number | null | undefined) => {
     if (!price || !high || !low || high <= low) return null;
@@ -1543,46 +1698,56 @@ export default function ConsolidatedPortfolioPage() {
   const topOtherCurrencies = otherCurrenciesBreakdown.slice(0, 3);
 
   return (
-    <div className="min-h-screen bg-background" dir="rtl">
+    <div className="min-h-screen bg-gradient-to-b from-background via-background to-muted/20" dir="rtl">
       <Sidebar />
       <div className="mr-16 transition-all duration-300 lg:mr-64">
         <TopBar title="تجميع المحافظ الاستثمارية" />
-        <main className="p-4 md:p-6 space-y-6">
+        <main className="w-full space-y-5 p-4 md:p-6">
           {/* Header */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-primary/10 text-primary rounded-xl">
-                <Layers className="h-6 w-6" />
+          <Card className="border-slate-300/70 bg-gradient-to-br from-background to-muted/30 shadow-sm">
+            <CardContent className="p-4 md:p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-primary/10 p-3 text-primary">
+                    <Layers className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h1 className="text-2xl font-extrabold tracking-tight">تجميع المحافظ</h1>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      تجميع المراكز يتم داخل نفس المحفظة فقط من أصل {portfolios.length} محفظة — بدون دمج بين محافظ مختلفة • الملخص بعملة {summaryCurrency}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
+                  <Select value={summaryCurrency} onValueChange={(value) => setSummaryCurrency(normalizeCurrencyCode(value))}>
+                    <SelectTrigger className="w-full bg-background/90 shadow-sm sm:w-[250px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {summaryCurrencyOptions.map((code) => (
+                        <SelectItem key={`summary-currency-${code}`} value={code}>
+                          {currencySymbol(code)} ({code}) - {currencyName(code)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shadow-sm"
+                    onClick={() => { pricesFetched.current = false; shariaFetched.current = false; fetchAllLiveData(); fetchAllSharia(); }}
+                    disabled={loadingPrices}
+                  >
+                    <RefreshCw className={`ml-1 h-4 w-4 ${loadingPrices ? 'animate-spin' : ''}`} />
+                    تحديث الأسعار
+                  </Button>
+                </div>
               </div>
-              <div>
-                <h1 className="text-2xl font-bold">تجميع المحافظ</h1>
-                <p className="text-sm text-muted-foreground mt-1">
-                  تجميع المراكز يتم داخل نفس المحفظة فقط من أصل {portfolios.length} محفظة — بدون دمج بين محافظ مختلفة • الملخص بعملة {summaryCurrency}
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
-              <Select value={summaryCurrency} onValueChange={(value) => setSummaryCurrency(normalizeCurrencyCode(value))}>
-                <SelectTrigger className="w-full sm:w-[220px] bg-background/80">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {summaryCurrencyOptions.map((code) => (
-                    <SelectItem key={`summary-currency-${code}`} value={code}>
-                      {currencySymbol(code)} ({code}) - {currencyName(code)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button variant="outline" size="sm" onClick={() => { pricesFetched.current = false; shariaFetched.current = false; fetchAllLiveData(); fetchAllSharia(); }} disabled={loadingPrices}>
-                <RefreshCw className={`h-4 w-4 ml-1 ${loadingPrices ? 'animate-spin' : ''}`} />
-                تحديث الأسعار
-              </Button>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
           {/* Institutional Capital Console */}
-          <Card className="overflow-hidden border-slate-300/80 bg-gradient-to-br from-slate-900 via-slate-800 to-blue-950 text-slate-100 dark:border-slate-700">
+          <Card className="overflow-hidden border-slate-300/80 bg-gradient-to-br from-slate-900 via-slate-800 to-blue-950 text-slate-100 shadow-[0_20px_45px_-28px_rgba(15,23,42,0.65)] dark:border-slate-700">
             <CardContent className="p-5 md:p-6">
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
                 <div className="xl:col-span-5 space-y-3">
@@ -1640,14 +1805,28 @@ export default function ConsolidatedPortfolioPage() {
           </Card>
 
           {/* Summary Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <Card className="border-slate-300/70 bg-gradient-to-b from-background to-slate-50/60 dark:to-slate-900/20">
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Banknote className="h-4 w-4 text-emerald-500" />
+                  <p className="text-xs text-muted-foreground">رأس المال المستثمر الفعلي</p>
+                </div>
+                <p className="text-lg font-bold">
+                  {hasManualCapital ? formatSummaryAmount(manualInvestedCapitalSar!) : 'غير محدد'}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {hasManualCapital ? `${currencyName(summaryCurrency)} · من الملف الشخصي` : 'أضفه من الملف الشخصي والإعدادات'}
+                </p>
+              </CardContent>
+            </Card>
             <Card className="border-slate-300/70 bg-gradient-to-b from-background to-slate-50/60 dark:to-slate-900/20">
               <CardContent className="pt-5 pb-4">
                 <div className="flex items-center gap-2 mb-2">
                   <Wallet className="h-4 w-4 text-blue-500" />
-                  <p className="text-xs text-muted-foreground">التكلفة الإجمالية</p>
+                  <p className="text-xs text-muted-foreground">إجمالي التكلفة الحالية</p>
                 </div>
-                <p className="text-lg font-bold">{formatSummaryAmount(totalCostSAR)}</p>
+                <p className="text-lg font-bold">{formatSummaryAmount(computedTotalCostSAR)}</p>
                 <p className="text-[10px] text-muted-foreground">{currencyName(summaryCurrency)}</p>
               </CardContent>
             </Card>
@@ -1687,7 +1866,43 @@ export default function ConsolidatedPortfolioPage() {
                 </p>
               </CardContent>
             </Card>
+            <Card className="border-slate-300/70 bg-gradient-to-b from-background to-slate-50/60 dark:to-slate-900/20">
+              <CardContent className="pt-5 pb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Banknote className="h-4 w-4 text-emerald-600" />
+                  <p className="text-xs text-muted-foreground">إجمالي التوزيعات المستلمة (موحّد)</p>
+                </div>
+                <p className="text-lg font-bold">{formatCurrencyByCode(totalPaidDividendsUnified, summaryCurrency)}</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {paidDividendsCurrencyCount > 0
+                    ? `من ${paidDividendsCurrencyCount} عملة`
+                    : 'لا توجد توزيعات مستلمة'}
+                </p>
+              </CardContent>
+            </Card>
           </div>
+
+          {hasManualCapital && (
+            <Card className="border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20">
+              <CardContent className="p-3 text-xs space-y-1">
+                <p className="font-semibold text-emerald-700 dark:text-emerald-300">
+                  رأس المال المستثمر الفعلي مربوط من ملف المستخدم.
+                </p>
+                {isManualCapitalApplied ? (
+                  <p className="text-muted-foreground">
+                    التكلفة المحسوبة من المراكز: {formatSummaryAmount(computedTotalCostSAR)}
+                    {typeof capitalDifferenceSAR === 'number' && (
+                      <> · الفرق: {capitalDifferenceSAR >= 0 ? '+' : ''}{formatSummaryAmount(capitalDifferenceSAR)}</>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-muted-foreground">
+                    يتم تطبيق رأس المال الفعلي عند عرض كل الأصول بدون فلاتر بحث أو تصنيف.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Currency Summary Mini Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1930,15 +2145,15 @@ export default function ConsolidatedPortfolioPage() {
           )}
 
           {/* Search & Filter */}
-          <Card className="sticky top-2 z-20 border-slate-300/70 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85">
-            <CardContent className="pt-6">
-              <div className="flex flex-wrap gap-4 items-center">
-                <div className="relative flex-1 min-w-[250px]">
+          <Card className="sticky top-2 z-20 border-slate-300/80 bg-background/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
+            <CardContent className="pb-4 pt-4">
+              <div className="grid grid-cols-1 items-center gap-3 lg:grid-cols-12">
+                <div className="relative min-w-0 lg:col-span-4">
                   <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input placeholder="بحث برمز أو اسم الأصل..." value={search} onChange={(e) => setSearch(e.target.value)} className="pr-10" />
                 </div>
                 <Select value={assetFilter} onValueChange={setAssetFilter}>
-                  <SelectTrigger className="w-[180px]">
+                  <SelectTrigger className="w-full lg:col-span-2">
                     <Filter className="h-4 w-4 ml-2" />
                     <SelectValue placeholder="تصفية حسب النوع" />
                   </SelectTrigger>
@@ -1950,29 +2165,49 @@ export default function ConsolidatedPortfolioPage() {
                     })}
                   </SelectContent>
                 </Select>
+                <Select value={portfolioFilter} onValueChange={setPortfolioFilter}>
+                  <SelectTrigger className="w-full lg:col-span-3">
+                    <Wallet className="h-4 w-4 ml-2" />
+                    <SelectValue placeholder="تصفية حسب المحفظة" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">كل المحافظ ({enrichedAssets.length})</SelectItem>
+                    {portfolioFilterOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label} ({option.count})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Select value={rankingFilter} onValueChange={(value) => setRankingFilter(value as RankingFilter)}>
-                  <SelectTrigger className="w-[210px]">
+                  <SelectTrigger className="w-full lg:col-span-3">
                     <TrendingUp className="h-4 w-4 ml-2" />
                     <SelectValue placeholder="ترتيب المراكز" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">الافتراضي (الأعلى قيمة)</SelectItem>
+                    <SelectItem value="highest-profit">الافتراضي (الأعلى ربحًا)</SelectItem>
                     <SelectItem value="highest-value">الأعلى قيمة</SelectItem>
                     <SelectItem value="lowest-value">الأقل قيمة</SelectItem>
-                    <SelectItem value="highest-profit">الأعلى ربحًا</SelectItem>
                     <SelectItem value="largest-loss">الأكثر خسارة</SelectItem>
+                    <SelectItem value="default">الترتيب القديم (الأعلى قيمة)</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5">المعروض: {filteredAssets.length}</span>
+                <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5">الإجمالي: {enrichedAssets.length}</span>
+                <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5">المحفظة: {selectedPortfolioFilterLabel}</span>
+                <span className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5">عملة العرض: {summaryCurrency}</span>
               </div>
             </CardContent>
           </Card>
 
           {/* Assets Table */}
-          <Card className="border-slate-300/70 shadow-sm">
-            <CardHeader className="border-b bg-muted/20">
-              <CardTitle className="text-base flex justify-between items-center">
+          <Card className="overflow-hidden border-slate-300/80 shadow-md">
+            <CardHeader className="border-b bg-gradient-to-r from-muted/30 via-muted/20 to-muted/10 py-3">
+              <CardTitle className="flex items-center justify-between text-base">
                 <span>الأصول المدمجة ({filteredAssets.length})</span>
-                <div className="flex gap-2 text-xs text-muted-foreground">
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                   <span>إجمالي: {formatSummaryAmount(totalValueSAR)}</span>
                   <span>•</span>
                   <span>قريب من القمم: {deskMetrics.nearHigh}</span>
@@ -1982,28 +2217,29 @@ export default function ConsolidatedPortfolioPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="overflow-x-auto max-h-[72vh]">
-                <Table className="text-[12px]">
+              <div className="max-h-[74vh] overflow-auto rounded-b-md [&_[data-slot=table-container]]:overflow-visible">
+                <Table className="w-full min-w-[1820px] table-fixed text-[12px] leading-relaxed [&_td]:px-2 [&_td]:py-2.5 [&_th]:px-2 [&_th]:py-2.5">
                   <TableHeader>
-                    <TableRow className="sticky top-0 z-10 bg-muted/95 backdrop-blur border-b border-border">
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">الرمز</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">الاسم / النوع</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">العملة</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">الكمية</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">متوسط الشراء</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">السعر الحالي</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">52 أسبوع + الزخم</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">التكلفة الكلية</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">القيمة الحالية</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">الربح/الخسارة</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">المعايير الشرعية</TableHead>
-                      <TableHead className="text-right whitespace-nowrap text-[11px] font-bold text-muted-foreground">إجراءات</TableHead>
+                    <TableRow className="sticky top-0 z-20 border-b border-border bg-gradient-to-b from-muted/95 to-muted/80 shadow-sm backdrop-blur">
+                      <TableHead className="w-[92px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">الرمز</TableHead>
+                      <TableHead className="w-[240px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">الاسم / النوع</TableHead>
+                      <TableHead className="w-[150px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">القيمة السوقية</TableHead>
+                      <TableHead className="w-[90px] whitespace-nowrap text-center text-[11px] font-bold text-muted-foreground">العملة</TableHead>
+                      <TableHead className="w-[150px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">الأسهم الحرة</TableHead>
+                      <TableHead className="w-[300px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">حجم التداول</TableHead>
+                      <TableHead className="w-[115px] whitespace-nowrap text-center text-[11px] font-bold text-muted-foreground">الكمية</TableHead>
+                      <TableHead className="w-[130px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">متوسط الشراء</TableHead>
+                      <TableHead className="w-[130px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">السعر الحالي</TableHead>
+                      <TableHead className="hidden w-[175px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground xl:table-cell">التكلفة الكلية</TableHead>
+                      <TableHead className="hidden w-[175px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground xl:table-cell">القيمة الحالية</TableHead>
+                      <TableHead className="w-[180px] whitespace-nowrap text-right text-[11px] font-bold text-muted-foreground">الربح/الخسارة</TableHead>
+                      <TableHead className="w-[260px] whitespace-nowrap text-center text-[11px] font-bold text-muted-foreground">إجراءات</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredAssets.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={12} className="text-center py-10 text-muted-foreground">لا توجد أصول مجمعة</TableCell>
+                        <TableCell colSpan={13} className="text-center py-10 text-muted-foreground">لا توجد أصول مجمعة</TableCell>
                       </TableRow>
                     ) : (
                       filteredAssets.map((asset) => {
@@ -2011,12 +2247,62 @@ export default function ConsolidatedPortfolioPage() {
                         const pct = pos52w(asset.currentPrice, asset.high52w, asset.low52w);
                         const vol = asset.volume ?? null;
                         const avgVol = asset.averageVolume ?? null;
+                        const shortPctFloat = asset.shortPercentOfFloat ?? null;
+                        const shortRatio = asset.shortRatio ?? null;
+                        const floatShares = asset.floatShares ?? null;
+                        const sharesOutstanding = asset.sharesOutstanding ?? null;
+                        const shortDataSource = asset.shortDataSource ?? null;
+                        const marketCap = asset.marketCap != null && asset.marketCap > 0
+                          ? asset.marketCap
+                          : (sharesOutstanding != null && sharesOutstanding > 0 && asset.currentPrice > 0 ? sharesOutstanding * asset.currentPrice : null);
+                        const estimatedSharesOutstanding = (sharesOutstanding != null && sharesOutstanding > 0)
+                          ? sharesOutstanding
+                          : (marketCap != null && marketCap > 0 && asset.currentPrice > 0 ? marketCap / asset.currentPrice : null);
+                        const inferredFloatShares = (asset.sharesShort != null && asset.sharesShort > 0 && shortPctFloat != null && shortPctFloat > 0)
+                          ? (asset.sharesShort * 100) / shortPctFloat
+                          : null;
+                        const freeFloatShares = (floatShares != null && floatShares > 0)
+                          ? floatShares
+                          : (inferredFloatShares != null && inferredFloatShares > 0
+                            ? inferredFloatShares
+                            : (estimatedSharesOutstanding != null && estimatedSharesOutstanding > 0 ? estimatedSharesOutstanding : null));
+                        const freeFloatKind: 'feed' | 'derived' | 'estimated' | null = (floatShares != null && floatShares > 0)
+                          ? 'feed'
+                          : (inferredFloatShares != null && inferredFloatShares > 0
+                            ? 'derived'
+                            : (freeFloatShares != null ? 'estimated' : null));
+                        const sharesShort = (asset.sharesShort != null && asset.sharesShort > 0)
+                          ? asset.sharesShort
+                          : (shortPctFloat != null && shortPctFloat > 0 && freeFloatShares != null && freeFloatShares > 0
+                            ? (shortPctFloat / 100) * freeFloatShares
+                            : null);
+                        const sharesBuyToCover = sharesShort;
                         const volRatio = vol != null && avgVol != null && avgVol > 0 ? vol / avgVol : null;
+                        const shortPositionLabel = pct == null
+                          ? 'غير متاح'
+                          : (pct > 70 ? 'قريب من الأعلى' : pct < 30 ? 'قريب من الأدنى' : 'في المنتصف');
+                        const volumeBarPct = volRatio != null ? Math.min(100, volRatio * 50) : 0;
+                        const volRatioLabel = volRatio != null ? `${volRatio.toFixed(1)}x` : '—';
+                        const volRatioToneClass = volRatio == null
+                          ? 'text-muted-foreground'
+                          : (volRatio > 1.5 ? 'text-green-600' : volRatio < 0.5 ? 'text-red-500' : 'text-muted-foreground');
+                        const volRatioBarClass = volRatio == null
+                          ? 'bg-muted-foreground/40'
+                          : (volRatio > 1.5 ? 'bg-green-500' : volRatio < 0.5 ? 'bg-red-400' : 'bg-blue-400');
+                        const shortPctLabel = shortPctFloat != null ? `${shortPctFloat.toFixed(2)}%` : 'غير متاح';
+                        const shortRatioLabel = shortRatio != null ? shortRatio.toFixed(2) : '—';
+                        const sharesShortLabel = sharesShort != null ? formatSharesCount(sharesShort) : 'غير متاح';
+                        const sharesBuyToCoverLabel = sharesBuyToCover != null ? formatSharesCount(sharesBuyToCover) : 'غير متاح';
+                        const sharesOutstandingLabel = estimatedSharesOutstanding != null && estimatedSharesOutstanding > 0 ? formatSharesCount(estimatedSharesOutstanding) : 'غير متاح';
+                        const freeFloatLabel = freeFloatShares != null ? formatSharesCount(freeFloatShares) : 'غير متاح';
+                        const marketCapLabel = marketCap != null ? formatSharesCount(marketCap) : '—';
+                        const sourceLabel = shortDataSource || asset.priceSource || 'غير متاح';
                         return (
-                          <TableRow key={asset.id} className="hover:bg-muted/50">
-                            <TableCell className="font-bold text-primary whitespace-nowrap">{asset.symbol}</TableCell>
-                            <TableCell>
-                              <p className="max-w-[140px] truncate text-sm font-medium" title={asset.name}>{asset.name}</p>
+                          <Fragment key={asset.id}>
+                          <TableRow className="border-b-0 border-t-2 border-border/70 odd:bg-background even:bg-slate-50/35 hover:bg-primary/5 dark:even:bg-slate-900/15">
+                            <TableCell className="whitespace-nowrap align-middle font-extrabold text-primary">{asset.symbol}</TableCell>
+                            <TableCell className="align-top">
+                              <p className="max-w-[170px] truncate text-sm font-medium" title={asset.name}>{asset.name}</p>
                               <div className="flex items-center gap-1 mt-0.5">
                                 <Badge variant="outline" className={`text-[9px] px-1 ${ASSET_TYPE_COLORS[asset.assetType] || ''}`}>
                                   {ASSET_TYPE_LABELS[asset.assetType] || asset.assetType}
@@ -2029,88 +2315,80 @@ export default function ConsolidatedPortfolioPage() {
                                 {asset.portfolioName}
                               </p>
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="whitespace-nowrap align-middle text-right">
+                              <span className="font-semibold tabular-nums">{marketCapLabel}</span>
+                              {marketCap != null && (
+                                <span className="mr-1 text-[10px] text-muted-foreground">{asset.currency}</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-center align-middle">
                               <Badge variant="secondary" className={`text-[10px] px-1.5 ${asset.currency === 'USD' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
                                 {asset.currency}
                               </Badge>
                             </TableCell>
-                            <TableCell className="font-semibold text-center">{formatNumber(asset.qty, 2)}</TableCell>
-                            <TableCell className="whitespace-nowrap">
-                              <span className="font-medium">{formatNumber(asset.averageBuyPrice, 2)}</span>
-                              <span className="text-[10px] text-muted-foreground mr-1">{curLabel(asset.currency)}</span>
+                            <TableCell className="whitespace-nowrap align-middle">
+                              <div className="flex flex-col leading-tight">
+                                <span className="font-semibold tabular-nums">{freeFloatLabel}</span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {freeFloatKind === 'feed' ? 'مباشر' : freeFloatKind === 'derived' ? 'مستنتج' : freeFloatKind === 'estimated' ? 'تقريبي' : 'غير متاح'}
+                                </span>
+                              </div>
                             </TableCell>
-                            <TableCell className="font-bold whitespace-nowrap">
-                              <span>{formatNumber(asset.currentPrice, 2)}</span>
-                              <span className="text-[10px] text-muted-foreground mr-1">{curLabel(asset.currency)}</span>
-                            </TableCell>
-                            <TableCell className="whitespace-nowrap">
-                              {asset.high52w != null && asset.low52w != null ? (
-                                <div className="space-y-1.5" dir="ltr">
-                                  <div className="flex items-center justify-between text-[10px] font-semibold">
-                                    <span className="text-red-600">أدنى 52 أسبوع: {formatNumber(asset.low52w, 2)}</span>
-                                    <span className="text-muted-foreground">|</span>
-                                    <span className="text-green-600">أعلى 52 أسبوع: {formatNumber(asset.high52w, 2)}</span>
-                                  </div>
-                                  {vol != null && (
-                                    <div className="text-center text-[10px] space-y-0.5" dir="rtl">
-                                      <p className="text-muted-foreground leading-4">حجم التداول:</p>
-                                      <p className="font-bold text-foreground leading-4">{formatVolume(vol)}</p>
-                                      {volRatio != null && (
-                                        <>
-                                          <p className={`font-semibold leading-4 ${volRatio > 1.2 ? 'text-green-600' : volRatio < 0.8 ? 'text-red-500' : 'text-amber-600'}`}>
-                                            {volRatio.toFixed(1)}x
-                                          </p>
-                                          {avgVol != null && (
-                                            <p className="text-muted-foreground leading-4">(متوسط: {formatVolume(avgVol)})</p>
-                                          )}
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-                                  <div className="relative h-2.5 rounded-full bg-muted overflow-hidden">
-                                    <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-red-500 via-amber-400 to-green-500 opacity-40 w-full" />
-                                    {pct !== null && (
-                                      <div
-                                        className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-primary border-2 border-background shadow-sm transition-[left] duration-500"
-                                        style={{ left: `calc(${pct}% - 7px)` }}
-                                      />
-                                    )}
-                                  </div>
-                                  {pct !== null && (
-                                    <p className="text-center text-[9px] text-muted-foreground" dir="rtl">
-                                      {pct > 70 ? 'قريب من الأعلى' : pct < 30 ? 'قريب من الأدنى' : 'في المنتصف'}
-                                    </p>
-                                  )}
+                            <TableCell className="align-middle">
+                              <div className="flex min-w-0 flex-col gap-1 text-[10px]" dir="rtl">
+                                <div className="flex items-center gap-1.5 whitespace-nowrap">
+                                  <span className="text-muted-foreground">حجم:</span>
+                                  <span className="font-semibold tabular-nums">{vol != null ? formatVolume(vol) : '—'}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">متوسط:</span>
+                                  <span className="font-semibold tabular-nums">{avgVol != null ? formatVolume(avgVol) : '—'}</span>
                                 </div>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
-                              )}
+                                <div className="flex items-center gap-1.5">
+                                  <div className="relative h-1.5 w-[130px] overflow-hidden rounded-full bg-muted">
+                                    <div className={`absolute inset-y-0 right-0 rounded-full transition-all ${volRatioBarClass}`} style={{ width: `${volumeBarPct}%` }} />
+                                    <div className="absolute inset-y-0 right-1/2 w-px bg-muted-foreground/30" />
+                                  </div>
+                                  <span className={`text-[10px] font-bold tabular-nums ${volRatioToneClass}`}>{volRatioLabel}</span>
+                                </div>
+                              </div>
                             </TableCell>
-                            <TableCell className="whitespace-nowrap">
+                            <TableCell className="whitespace-nowrap text-center align-middle font-semibold tabular-nums">{formatNumber(asset.qty, 2)}</TableCell>
+                            <TableCell className="whitespace-nowrap align-middle text-right">
+                              <span className="font-medium tabular-nums">{formatNumber(asset.averageBuyPrice, 2)}</span>
+                              <span className="text-[10px] text-muted-foreground mr-1">{curLabel(asset.currency)}</span>
+                            </TableCell>
+                            <TableCell className="font-bold whitespace-nowrap align-middle text-right">
+                              <span className="tabular-nums">{formatNumber(asset.currentPrice, 2)}</span>
+                              <span className="text-[10px] text-muted-foreground mr-1">{curLabel(asset.currency)}</span>
+                            </TableCell>
+                            <TableCell className="hidden whitespace-nowrap xl:table-cell">
                               <div className="flex flex-col">
                                 <span className="font-medium">{formatNumber(asset.totalCost, 2)} <span className="text-[10px] text-muted-foreground">{curLabel(asset.currency)}</span></span>
                                 {asset.currency !== 'SAR' && <span className="text-[10px] text-muted-foreground">≈ {formatCurrency(asset.totalCostSAR)}</span>}
                               </div>
                             </TableCell>
-                            <TableCell className="font-semibold whitespace-nowrap">
+                            <TableCell className="hidden font-semibold whitespace-nowrap xl:table-cell">
                               <div className="flex flex-col">
                                 <span>{formatNumber(asset.totalValue, 2)} <span className="text-[10px] text-muted-foreground">{curLabel(asset.currency)}</span></span>
                                 {asset.currency !== 'SAR' && <span className="text-[10px] text-muted-foreground">≈ {formatCurrency(asset.totalValueSAR)}</span>}
                               </div>
                             </TableCell>
-                            <TableCell className="whitespace-nowrap">
-                              <div className={isPositive ? 'text-green-600' : 'text-red-600'}>
-                                <span className="font-bold text-sm">{isPositive ? '+' : ''}{formatNumber(asset.profitLoss, 2)}</span>
-                                <span className="text-[10px] mr-0.5">{curLabel(asset.currency)}</span>
-                                <span className="block text-xs font-medium">({isPositive ? '+' : ''}{formatPercent(asset.profitLossPct)})</span>
+                            <TableCell className="whitespace-nowrap align-middle">
+                              <div className={`rounded-md border px-2 py-1.5 ${isPositive ? 'border-green-200 bg-green-50/60 text-green-700 dark:border-green-900 dark:bg-green-950/25' : 'border-red-200 bg-red-50/60 text-red-700 dark:border-red-900 dark:bg-red-950/25'}`}>
+                                <span className="font-extrabold text-sm tabular-nums">{isPositive ? '+' : ''}{formatNumber(asset.profitLoss, 2)}</span>
+                                <span className="mr-0.5 text-[10px]">{curLabel(asset.currency)}</span>
+                                <span className="block text-xs font-bold tabular-nums">({isPositive ? '+' : ''}{formatPercent(asset.profitLossPct)})</span>
                                 {asset.currency !== 'SAR' && (
                                   <span className="block text-[10px] text-muted-foreground">≈ {isPositive ? '+' : ''}{formatCurrency(asset.profitLossSAR)}</span>
                                 )}
                               </div>
+                              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground xl:hidden">
+                                <p>التكلفة: {formatNumber(asset.totalCost, 2)} {curLabel(asset.currency)}</p>
+                                <p>القيمة: {formatNumber(asset.totalValue, 2)} {curLabel(asset.currency)}</p>
+                              </div>
                             </TableCell>
-                            <TableCell>{renderSharia(asset)}</TableCell>
-                            <TableCell>
-                              <div className="flex flex-wrap items-center gap-1.5" dir="rtl">
+                            <TableCell className="min-w-[250px] whitespace-nowrap align-middle">
+                              <div className="flex flex-nowrap items-center justify-end gap-1.5 whitespace-nowrap" dir="rtl">
                                 <Button variant="outline" size="sm" className={ACTION_MOVE_BUTTON_CLASS} onClick={() => openMoveDialog(asset)} disabled={actionSaving}>
                                   <ArrowRightLeft className="h-3.5 w-3.5" />
                                   <span>نقل</span>
@@ -2126,6 +2404,66 @@ export default function ConsolidatedPortfolioPage() {
                               </div>
                             </TableCell>
                           </TableRow>
+                          <TableRow className="border-b-2 border-border/80 bg-muted/10">
+                            <TableCell colSpan={13} className="pt-0 pb-3">
+                              <div dir="rtl" className="rounded-md border-2 border-border/70 bg-background/90 px-2.5 py-1.5 text-[10px]">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                  {(asset.high52w != null || asset.low52w != null) ? (
+                                    <>
+                                      <div className="flex items-center gap-2" dir="ltr">
+                                        <span className="whitespace-nowrap text-red-600">أدنى 52: <span className="font-semibold tabular-nums">{asset.low52w != null ? formatNumber(asset.low52w, 2) : 'غير متاح'}</span></span>
+                                        <div className="relative min-w-[210px] w-[230px]">
+                                          <div className="relative h-2.5 overflow-hidden rounded-full bg-muted">
+                                            <div className="absolute inset-y-0 left-0 w-full bg-gradient-to-r from-red-500 via-amber-400 to-green-500 opacity-45" />
+                                            {pct !== null && (
+                                              <div
+                                                className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full border-2 border-background bg-primary shadow-sm transition-[left] duration-500"
+                                                style={{ left: `calc(${pct}% - 7px)` }}
+                                              />
+                                            )}
+                                          </div>
+                                          {pct !== null && (
+                                            <span
+                                              className="absolute top-[12px] -translate-x-1/2 whitespace-nowrap text-[10px] font-bold tabular-nums text-primary"
+                                              style={{ left: `${pct}%` }}
+                                            >
+                                              {formatNumber(asset.currentPrice, 2)}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <span className="whitespace-nowrap text-green-600">أعلى 52: <span className="font-semibold tabular-nums">{asset.high52w != null ? formatNumber(asset.high52w, 2) : 'غير متاح'}</span></span>
+                                      </div>
+                                      <span className="text-muted-foreground">{shortPositionLabel}{pct != null ? ` ${Math.round(pct)}%` : ''}</span>
+                                      <span className="text-muted-foreground">|</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="text-muted-foreground">نطاق 52 أسبوع: غير متاح</span>
+                                      <span className="text-muted-foreground">|</span>
+                                    </>
+                                  )}
+                                  <span className="text-muted-foreground">البيع على المكشوف:</span>
+                                  <span className="font-semibold tabular-nums">{shortPctLabel}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">DTC:</span>
+                                  <span className="font-semibold tabular-nums">{shortRatioLabel}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">أسهم الشورت:</span>
+                                  <span className="font-semibold tabular-nums">{sharesShortLabel}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">الشراء للتغطية:</span>
+                                  <span className="font-semibold tabular-nums">{sharesBuyToCoverLabel}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">الأسهم القائمة:</span>
+                                  <span className="font-semibold tabular-nums">{sharesOutstandingLabel}</span>
+                                  <span className="text-muted-foreground">|</span>
+                                  <span className="text-muted-foreground">المصدر:</span>
+                                  <span className="font-medium">{sourceLabel}</span>
+                                </div>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                          </Fragment>
                         );
                       })
                     )}
