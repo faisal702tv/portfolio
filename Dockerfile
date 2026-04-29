@@ -1,12 +1,12 @@
 # ─── Stage 1: Build ──────────────────────────────────────────
 FROM node:22-alpine AS builder
 
-# تثبيت الاعتمادات الضرورية للبناء
+# تثبيت الأدوات اللازمة
 RUN apk add --no-cache git openssl python3 make g++
 
 WORKDIR /app
 
-# نسخ ملفات التبعيات أولاً
+# نسخ ملفات التبعيات
 COPY package.json pnpm-lock.yaml ./
 
 # تثبيت pnpm والمكتبات
@@ -19,7 +19,7 @@ COPY . .
 # توليد Prisma Client (خطوة حاسمة قبل البناء)
 RUN npx prisma generate
 
-# إعداد متغيرات البيئة للبناء
+# متغيرات البيئة للبناء (قيم وهمية كافية لإتمام البناء)
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db"
 
@@ -42,6 +42,7 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# نسخ ملفات Prisma للهجرة لاحقاً إذا لزم الأمر
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
