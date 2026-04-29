@@ -1,19 +1,21 @@
 version: '3.8'
 
 services:
-  app:
+  portfolio:
+    # هذا السطر هو الأهم: يجبر Hostinger على البناء من Dockerfile
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        GITHUB_TOKEN: ${GITHUB_TOKEN}
-    container_name: portfolio-app
+        - GITHUB_TOKEN=${GITHUB_TOKEN}
+    
+    container_name: portfolio-portfolio-1
     restart: always
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=${NODE_ENV}
-      - DATABASE_URL=${DATABASE_URL}
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres_secure_pass@db:5432/portfolio_db
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
@@ -24,7 +26,7 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - portfolio-network
+      - portfolio_default
 
   db:
     image: postgres:16-alpine
@@ -35,14 +37,14 @@ services:
       POSTGRES_PASSWORD: postgres_secure_pass
       POSTGRES_DB: portfolio_db
     volumes:
-      - pg_/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - portfolio-network
+      - portfolio_default
 
   redis:
     image: redis:7-alpine
@@ -54,11 +56,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - portfolio-network
+      - portfolio_default
 
 volumes:
-  pg_
+  pgdata:
 
 networks:
-  portfolio-network:
+  portfolio_default:
     driver: bridge
