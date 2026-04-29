@@ -13,7 +13,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:postgres_secure_pass@db:5432/portfolio_db
+      - DATABASE_URL=postgresql://postgres:SecurePass123@db:5432/portfolio_db
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
@@ -32,10 +32,10 @@ services:
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_secure_pass
+      POSTGRES_PASSWORD: SecurePass123
       POSTGRES_DB: portfolio_db
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -57,7 +57,7 @@ services:
       - portfolio-net
 
 volumes:
-  pg_data:
+  pgdata:
 
 networks:
   portfolio-net:
