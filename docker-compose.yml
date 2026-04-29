@@ -13,7 +13,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:SecurePass123@db:5432/portfolio_db
+      - DATABASE_URL=postgresql://postgres:SecurePass123!@db:5432/portfolio_db
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
@@ -24,7 +24,7 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - portfolio-net
+      - port-net
 
   db:
     image: postgres:16-alpine
@@ -32,7 +32,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: SecurePass123
+      POSTGRES_PASSWORD: SecurePass123!
       POSTGRES_DB: portfolio_db
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -42,7 +42,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - portfolio-net
+      - port-net
 
   redis:
     image: redis:7-alpine
@@ -54,11 +54,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - portfolio-net
+      - port-net
 
 volumes:
   pgdata:
 
 networks:
-  portfolio-net:
+  port-net:
     driver: bridge
