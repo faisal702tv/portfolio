@@ -1,47 +1,64 @@
+version: '3.8'
+
 services:
-  portfolio:
-    build: .
-    user: "0:0"
-    restart: unless-stopped
-    init: true
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GITHUB_TOKEN: ${GITHUB_TOKEN}
+    container_name: portfolio-app
+    restart: always
     ports:
-      - "3333:3333"
-    networks:
-      - default
-      - coolify
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=coolify"
-      - "traefik.http.services.portfolio.loadbalancer.server.port=3333"
-      - "traefik.http.routers.portfolio-http.rule=Host(`isthmar.cloud`) || Host(`www.isthmar.cloud`)"
-      - "traefik.http.routers.portfolio-http.entrypoints=http"
-      - "traefik.http.routers.portfolio-http.middlewares=portfolio-https-redirect"
-      - "traefik.http.middlewares.portfolio-https-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.portfolio-https.rule=Host(`isthmar.cloud`) || Host(`www.isthmar.cloud`)"
-      - "traefik.http.routers.portfolio-https.entrypoints=https"
-      - "traefik.http.routers.portfolio-https.tls=true"
-      - "traefik.http.routers.portfolio-https.tls.certresolver=letsencrypt"
+      - "3000:3000"
     environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DOCKER_DATABASE_URL:-file:/app/data/portfolio.db}
-      JWT_SECRET: ${JWT_SECRET}
-      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3333}
+      - NODE_ENV=${NODE_ENV}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - portfolio-network
+
+  db:
+    image: postgres:16-alpine
+    container_name: portfolio-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_secure_pass
+      POSTGRES_DB: portfolio_db
     volumes:
-      - portfolio-data:/app/data
+      - pg_/var/lib/postgresql/data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"const http=require('http');const req=http.get('http://127.0.0.1:3333/api',res=>process.exit(res.statusCode>=200&&res.statusCode<400?0:1));req.on('error',()=>process.exit(1));req.setTimeout(5000,()=>{req.destroy();process.exit(1);});\"",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 45s
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - portfolio-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: portfolio-redis
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - portfolio-network
 
 volumes:
-  portfolio-data:
+  pg_
 
 networks:
-  coolify:
-    external: true
+  portfolio-network:
+    driver: bridge
