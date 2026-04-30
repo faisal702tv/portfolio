@@ -6,12 +6,11 @@ RUN apk add --no-cache git openssl python3 make g++
 
 WORKDIR /app
 
-# نسخ ملفات التبعيات
-COPY package.json pnpm-lock.yaml ./
+# نسخ ملفات التبعيات (نستخدم npm لأن المشروع لا يحتوي على pnpm-lock.yaml)
+COPY package.json package-lock.json ./
 
-# تثبيت pnpm والمكتبات
-RUN npm install -g pnpm
-RUN pnpm install --frozen-lockfile
+# تثبيت المكتبات باستخدام npm
+RUN npm ci
 
 # نسخ باقي الكود
 COPY . .
@@ -24,7 +23,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db"
 
 # تنفيذ البناء
-RUN pnpm build
+RUN npm run build
 
 # ─── Stage 2: Production Runner ──────────────────────────────
 FROM node:22-alpine AS runner

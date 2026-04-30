@@ -1,4 +1,5 @@
-version: '3.8'
+# Docker Compose for Portfolio Manager Pro
+# Compatible with Hostinger VPS Docker deployment
 
 services:
   app:
