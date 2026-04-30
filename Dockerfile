@@ -20,7 +20,9 @@ RUN npx prisma generate
 
 # متغيرات البيئة للبناء (قيم وهمية كافية لإتمام البناء)
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db"
+ENV DATABASE_URL="postgresql://user:pass@localhost:5432/temp_db"
+ENV JWT_SECRET="build-time-secret-key-for-nextjs-build-process-only"
+ENV ENCRYPTION_KEY="build-time-encryption-key-32-chars-min"
 
 # تنفيذ البناء
 RUN npm run build
