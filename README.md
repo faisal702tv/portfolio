@@ -47,11 +47,13 @@ cp .env.example .env
 
 ثم عدّل القيم التالية في `.env`:
 
+- `DATABASE_URL=postgresql://...`
 - `JWT_SECRET` قيمة قوية
 - `NEXT_PUBLIC_APP_URL=https://your-domain.com`
 - `DOMAIN=your-domain.com`
 - `ACME_EMAIL=you@example.com`
-- `DOCKER_DATABASE_URL=file:/app/data/portfolio.db` (اختياري، موجود افتراضيًا في `docker-compose.yml`)
+- `DOCKER_DATABASE_URL=postgresql://...` (اختياري، له قيمة افتراضية في `docker-compose.yml`)
+- `REDIS_URL=redis://...` (اختياري، له قيمة افتراضية `redis://redis:6379` داخل Docker)
 
 ### 2) بناء وتشغيل الحاويات
 
@@ -76,9 +78,29 @@ docker compose up -d --build
 
 ### ملاحظات مهمة
 
-- قاعدة البيانات SQLite تُحفظ في Volume باسم `portfolio-data` ولن تضيع عند إعادة البناء.
-- الحاوية تقوم تلقائيًا بتشغيل `prisma db push` عند الإقلاع لمزامنة الجداول.
+- قاعدة البيانات PostgreSQL تُحفظ في Volume باسم `postgres-data` ولن تضيع عند إعادة البناء.
+- Redis يُحفظ في Volume باسم `redis-data` ويستخدم لـ Rate Limiting بنمط Token Bucket.
+- الحاوية تطبّق `prisma migrate deploy` ثم `prisma db push` عند الإقلاع لمزامنة الجداول.
 - Caddy يفعّل HTTPS تلقائيًا عندما يكون `DOMAIN` صحيحًا ومشيرًا إلى IP السيرفر.
+
+### ترحيل البيانات من SQLite إلى PostgreSQL (مرة واحدة)
+
+```bash
+# 1) شغّل PostgreSQL (مثلاً عبر Docker)
+docker compose up -d postgres
+
+# 2) طبّق schema على PostgreSQL
+npm run db:push:pg
+
+# 3) معاينة بدون كتابة
+npm run db:migrate:sqlite-to-pg:dry-run
+
+# 4) تنفيذ الترحيل الفعلي
+npm run db:migrate:sqlite-to-pg
+```
+
+> السكربت يقرأ من `SQLITE_DATABASE_URL` (الافتراضي: `file:./prisma/dev.db`) ويكتب إلى `DATABASE_URL` (PostgreSQL).
+> السكربت ينشئ نسخة احتياطية تلقائيًا من ملف SQLite قبل النقل الفعلي.
 
 ---
 
@@ -174,6 +196,35 @@ docker compose up -d --build
 
 ---
 
+## 🧠 Advanced Analytics & Rebalancing
+
+### المؤشرات المالية المتقدمة (`src/lib/financials.ts`)
+
+المكتبة توفر دوال تحليل مؤسسية (Pure Functions):
+
+- `calculateCAGR(startValue, endValue, years)`
+- `calculateSharpeRatio(periodReturns, riskFreeRate, periodsPerYear)`
+- `calculateSortinoRatio(periodReturns, riskFreeRate, periodsPerYear, targetReturnPerPeriod)`
+- `calculateMaxDrawdown(prices)`
+- `calculateVolatility(periodReturns, periodsPerYear)`
+- `toReturnsFromPrices(prices)`
+
+### صفحة إعادة التوازن الذكي
+
+- المسار: `/dashboard/rebalance`
+- الوظيفة:
+  - مقارنة التوزيع الحالي مقابل التوزيع المستهدف.
+  - إنشاء توصيات شراء/بيع بقيمة مالية مباشرة.
+  - حفظ التوزيع المستهدف لكل محفظة في قاعدة البيانات (`Portfolio.targetAllocation`).
+
+### اختبارات الدقة
+
+تمت إضافة اختبارات وحدة للمكتبة الجديدة في:
+
+- `src/lib/__tests__/financials.test.ts`
+
+---
+
 ## 🕌 معايير الشريعة الإسلامية (4 معايير فقط)
 
 ### 1. بنك البلاد
@@ -245,6 +296,7 @@ docker compose up -d --build
 | 🤖 مساعد AI | `/ai-assistant` | مساعد الاستثمار الذكي |
 | 🧠 تحليل AI | `/ai-analysis` | تحليلات الذكاء الاصطناعي |
 | 📊 تحليل المحفظة | `/portfolio-ai` | تحليل المحفظة بالذكاء الاصطناعي |
+| 🎯 إعادة التوازن الذكي | `/dashboard/rebalance` | موازنة المحفظة وتوصيات شراء/بيع |
 | 🕯️ الشموع اليابانية | `/candlestick` | تحليل الشموع اليابانية |
 | 🧮 الحاسبة المالية | `/calculator` | حاسبة الأرباح والخسائر |
 
@@ -318,6 +370,7 @@ portfolio/
 │   │   ├── 📁 ai-assistant/       # مساعد AI
 │   │   ├── 📁 ai-analysis/        # تحليل AI
 │   │   ├── 📁 portfolio-ai/       # تحليل المحفظة
+│   │   ├── 📁 dashboard/rebalance/# إعادة التوازن الذكي
 │   │   ├── 📁 candlestick/        # الشموع اليابانية
 │   │   ├── 📁 dividends/          # التوزيعات
 │   │   ├── 📁 portfolios/         # إدارة المحافظ
@@ -337,12 +390,14 @@ portfolio/
 │   ├── 📁 lib/                    # الدوال المساعدة
 │   │   ├── 📄 utils.ts
 │   │   ├── 📄 helpers.ts
+│   │   ├── 📄 financials.ts       # التحليلات المالية المتقدمة
 │   │   └── 📄 db.ts
 │   ├── 📁 hooks/                  # React Hooks
 │   └── 📁 types/                  # أنواع TypeScript
 │       └── 📄 index.ts
 ├── 📁 prisma/                     # قاعدة البيانات
-│   └── 📄 schema.prisma
+│   ├── 📄 schema.prisma
+│   └── 📁 migrations/             # ترحيلات PostgreSQL
 ├── 📁 public/                     # الملفات العامة
 │   ├── 📄 logo.svg
 │   ├── 📄 manifest.json
@@ -375,11 +430,17 @@ npm run lint
 # تهيئة قاعدة البيانات
 npm run db:push
 
+# تهيئة PostgreSQL
+npm run db:push:pg
+
 # توليد Prisma Client
 npm run db:generate
 
 # تشغيل الهجرات
 npm run db:migrate
+
+# ترحيل بيانات SQLite إلى PostgreSQL
+npm run db:migrate:sqlite-to-pg
 ```
 
 ---
@@ -391,7 +452,7 @@ npm run db:migrate
 | المنفذ الافتراضي | 3500 |
 | اللغة | العربية (RTL) |
 | الوضع الداكن | مدعوم |
-| قاعدة البيانات | SQLite (تُنشأ تلقائياً) |
+| قاعدة البيانات | PostgreSQL 16 (مع سكربت ترحيل من SQLite) |
 | عدد الصفحات | 37 صفحة |
 | عدد APIs | 8 نقاط نهاية |
 

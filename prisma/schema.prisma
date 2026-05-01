@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -121,6 +121,7 @@ model UserEarningsRecord {
   @@index([userId])
   @@index([symbol])
   @@index([announcementDate])
+  @@index([userId, symbol, announcementDate])
   @@map("user_earnings_records")
 }
 
@@ -148,6 +149,7 @@ model UserCorporateActionRecord {
   @@index([userId])
   @@index([symbol])
   @@index([effectiveDate])
+  @@index([userId, symbol, effectiveDate])
   @@map("user_corporate_action_records")
 }
 
@@ -162,6 +164,7 @@ model Portfolio {
   description String?  
   type        String   @default("mixed") // stocks, bonds, funds, mixed
   currency    String   @default("SAR") 
+  targetAllocation Json?
   isActive    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -173,6 +176,7 @@ model Portfolio {
   transactions Transaction[]
   
   @@index([userId])
+  @@index([userId, createdAt])
   @@map("portfolios")
 }
 
@@ -342,6 +346,7 @@ model Transaction {
   @@index([assetSymbol])
   @@index([type])
   @@index([date])
+  @@index([portfolioId, assetSymbol, date])
   @@map("transactions")
 }
 

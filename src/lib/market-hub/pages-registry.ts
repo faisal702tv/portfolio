@@ -235,6 +235,14 @@ export const PAGES: PageEntry[] = [
     accountDomains: ['portfolios'],
   },
   {
+    path: '/dashboard/rebalance',
+    labelAr: 'إعادة التوازن الذكي',
+    labelEn: 'Smart Rebalancing',
+    category: 'portfolio',
+    description: 'مقارنة التوزيع الحالي والمستهدف مع توصيات شراء/بيع.',
+    accountDomains: ['portfolios', 'ai'],
+  },
+  {
     path: '/watchlist',
     labelAr: 'قوائم المراقبة',
     labelEn: 'Watchlist',

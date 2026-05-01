@@ -38,6 +38,8 @@ import {
   X,
   CalendarDays,
   CandlestickChart,
+  Clock3,
+  Trophy,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
@@ -85,6 +87,7 @@ const navigation: NavSection[] = [
     items: [
       { title: 'إدارة المحافظ', href: '/portfolios', icon: <Briefcase className="h-4 w-4" /> },
       { title: 'تجميع المحافظ', href: '/consolidated-portfolio', icon: <Layers className="h-4 w-4" /> },
+      { title: 'إعادة التوازن الذكي', href: '/dashboard/rebalance', icon: <Target className="h-4 w-4" /> },
       { title: 'الأسهم', href: '/stocks', icon: <TrendingUp className="h-4 w-4" />, badgeKey: 'stocks' },
       { title: 'السندات والصكوك', href: '/bonds', icon: <FileText className="h-4 w-4" />, badgeKey: 'bonds' },
       { title: 'الصناديق', href: '/funds', icon: <Briefcase className="h-4 w-4" />, badgeKey: 'funds' },
@@ -100,8 +103,12 @@ const navigation: NavSection[] = [
     title: '\u{1F916} تحليل ذكي',
     items: [
       { title: 'تحليل AI', href: '/ai-analysis', icon: <Brain className="h-4 w-4" /> },
+      { title: 'المحفظة الذكية', href: '/portfolio-ai', icon: <Target className="h-4 w-4" /> },
       { title: 'التحليل الفني', href: '/technical-analysis', icon: <LineChart className="h-4 w-4" /> },
       { title: 'المدارس الفنية', href: '/technical-schools', icon: <CandlestickChart className="h-4 w-4" /> },
+      { title: 'Smart Trader Ultra', href: '/smart-trader-ultra', icon: <CandlestickChart className="h-4 w-4" /> },
+      { title: 'المحاكي الزمني', href: '/simulator', icon: <Clock3 className="h-4 w-4" /> },
+      { title: 'الفرص الذهبية', href: '/opportunities', icon: <Trophy className="h-4 w-4" /> },
       { title: 'تحليل المخاطر', href: '/risk-analysis', icon: <ShieldCheck className="h-4 w-4" /> },
       { title: 'الحاسبة', href: '/calculator', icon: <Calculator className="h-4 w-4" /> },
       { title: 'الشموع اليابانية', href: '/candlestick', icon: <LineChart className="h-4 w-4" /> },

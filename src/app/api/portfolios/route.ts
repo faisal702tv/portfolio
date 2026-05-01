@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { createPortfolioSchema, addStockSchema, addBondSchema, addFundSchema } from '@/lib/validations';
+import { Prisma } from '@prisma/client';
+
+type TargetAllocationPayload = {
+  mode: 'sector' | 'asset';
+  entries: { key: string; label: string; weight: number }[];
+  updatedAt?: string;
+};
 
 function isDbUnavailable(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error ?? '');
@@ -13,6 +20,45 @@ function getUserFromRequest(request: NextRequest) {
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.substring(7);
   return verifyToken(token);
+}
+
+function normalizeTargetAllocation(raw: unknown): TargetAllocationPayload {
+  if (raw == null) return {
+    mode: 'sector',
+    entries: [],
+    updatedAt: new Date().toISOString(),
+  };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('targetAllocation يجب أن يكون كائنًا.');
+  }
+
+  const parsed = raw as Record<string, unknown>;
+  const mode = parsed.mode === 'asset' ? 'asset' : 'sector';
+  const entriesInput = Array.isArray(parsed.entries) ? parsed.entries : [];
+
+  const entries = entriesInput
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const key = String(record.key ?? '').trim();
+      const label = String(record.label ?? key).trim();
+      const weight = Number(record.weight ?? 0);
+      if (!key || !Number.isFinite(weight) || weight < 0) return null;
+      return { key, label: label || key, weight };
+    })
+    .filter((entry): entry is { key: string; label: string; weight: number } => Boolean(entry));
+
+  const total = entries.reduce((sum, item) => sum + item.weight, 0);
+  if (entries.length > 0 && Math.abs(total - 100) > 0.2) {
+    throw new Error('مجموع الأوزان المستهدفة يجب أن يساوي 100%.');
+  }
+
+  const updatedAtRaw = parsed.updatedAt;
+  const updatedAt = typeof updatedAtRaw === 'string' && updatedAtRaw.trim()
+    ? updatedAtRaw
+    : new Date().toISOString();
+
+  return { mode, entries, updatedAt };
 }
 
 function calcPortfolioValue(portfolio: {
@@ -121,6 +167,17 @@ export async function POST(request: NextRequest) {
         );
       }
       const data = parsed.data;
+      let targetAllocation: TargetAllocationPayload | undefined;
+      try {
+        if (body.targetAllocation != null) {
+          targetAllocation = normalizeTargetAllocation(body.targetAllocation);
+        }
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : 'targetAllocation غير صالح.' },
+          { status: 400 }
+        );
+      }
 
       const portfolio = await db.portfolio.create({
         data: {
@@ -129,6 +186,7 @@ export async function POST(request: NextRequest) {
           description: data.description,
           type: data.type,
           currency: data.currency,
+          targetAllocation,
         },
       });
 
@@ -256,8 +314,22 @@ export async function PUT(request: NextRequest) {
     const portfolio = await db.portfolio.findFirst({ where: { id, userId: user.id } });
     if (!portfolio) return NextResponse.json({ error: 'المحفظة غير موجودة' }, { status: 404 });
 
-    const updateData: any = {};
+    const updateData: Prisma.PortfolioUpdateInput = {};
     if (name) updateData.name = name;
+    if (Object.prototype.hasOwnProperty.call(body, 'targetAllocation')) {
+      try {
+        if (body.targetAllocation == null) {
+          updateData.targetAllocation = Prisma.JsonNull;
+        } else {
+          updateData.targetAllocation = normalizeTargetAllocation(body.targetAllocation);
+        }
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : 'targetAllocation غير صالح.' },
+          { status: 400 }
+        );
+      }
+    }
 
     const updated = await db.portfolio.update({ where: { id }, data: updateData });
     return NextResponse.json({ success: true, portfolio: updated });
